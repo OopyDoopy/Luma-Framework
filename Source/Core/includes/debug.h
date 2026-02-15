@@ -6,6 +6,14 @@
 #include <string>
 #include <fstream>
 
+#if TEST
+#include <DbgHelp.h>
+#include <sstream>
+#include <ctime>
+#include <filesystem>
+#pragma comment(lib, "DbgHelp.lib")
+#endif // TEST
+
 // DEFINE_NAME_AS_STRING
 #ifndef _STRINGIZE // Already defined by some MSVC includes
 #define _STRINGIZE(x) _STRINGIZE2(x)
@@ -157,6 +165,138 @@ namespace
    }
 #endif // DEVELOPMENT || _DEBUG
 }
+
+#if TEST
+namespace CrashHandler
+{
+   // Writes the callstack from an exception context to a log file next to the module.
+   inline LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* exception_info)
+   {
+      // Build output path: <module_dir>/Luma-CrashLog.txt
+      wchar_t module_path[MAX_PATH]{};
+      // Pass nullptr to get the path of the host .exe; the crash log lands beside it.
+      GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+      std::filesystem::path log_path = std::filesystem::path(module_path).parent_path() / "Luma-CrashLog.txt";
+
+      std::ofstream log_file(log_path, std::ios::app);
+      if (!log_file) return EXCEPTION_CONTINUE_SEARCH;
+
+      // Timestamp
+      std::time_t now = std::time(nullptr);
+      char time_buf[64]{};
+      std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+
+      log_file << "=== Luma Crash Dump (" << time_buf << ") ===\n";
+      log_file << "Game: " << Globals::GAME_NAME << "\n";
+
+      if (exception_info && exception_info->ExceptionRecord)
+      {
+         const auto& rec = *exception_info->ExceptionRecord;
+         std::ostringstream oss;
+         oss << std::hex << "Exception Code: 0x" << rec.ExceptionCode
+             << "  Address: 0x" << reinterpret_cast<uintptr_t>(rec.ExceptionAddress);
+         log_file << oss.str() << "\n";
+      }
+
+      // Walk the stack
+      HANDLE process = GetCurrentProcess();
+      HANDLE thread  = GetCurrentThread();
+      SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+      SymInitialize(process, nullptr, TRUE);
+
+      CONTEXT ctx{};
+      if (exception_info && exception_info->ContextRecord)
+      {
+         ctx = *exception_info->ContextRecord;
+      }
+      else
+      {
+         RtlCaptureContext(&ctx);
+      }
+
+      STACKFRAME64 frame{};
+      DWORD machine_type = 0;
+#ifdef _M_X64
+      machine_type = IMAGE_FILE_MACHINE_AMD64;
+      frame.AddrPC.Offset    = ctx.Rip;
+      frame.AddrPC.Mode      = AddrModeFlat;
+      frame.AddrFrame.Offset = ctx.Rbp;
+      frame.AddrFrame.Mode   = AddrModeFlat;
+      frame.AddrStack.Offset = ctx.Rsp;
+      frame.AddrStack.Mode   = AddrModeFlat;
+#elif defined(_M_IX86)
+      machine_type = IMAGE_FILE_MACHINE_I386;
+      frame.AddrPC.Offset    = ctx.Eip;
+      frame.AddrPC.Mode      = AddrModeFlat;
+      frame.AddrFrame.Offset = ctx.Ebp;
+      frame.AddrFrame.Mode   = AddrModeFlat;
+      frame.AddrStack.Offset = ctx.Esp;
+      frame.AddrStack.Mode   = AddrModeFlat;
+#endif
+
+      log_file << "\nCallstack:\n";
+
+      constexpr int max_frames = 64;
+      for (int i = 0; i < max_frames; ++i)
+      {
+         if (!StackWalk64(machine_type, process, thread, &frame, &ctx,
+                          nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+         {
+            break;
+         }
+         if (frame.AddrPC.Offset == 0) break;
+
+         // Resolve symbol name
+         constexpr size_t sym_buf_size = sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR);
+         alignas(SYMBOL_INFO) char sym_buffer[sym_buf_size]{};
+         SYMBOL_INFO* symbol  = reinterpret_cast<SYMBOL_INFO*>(sym_buffer);
+         symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+         symbol->MaxNameLen   = MAX_SYM_NAME;
+
+         DWORD64 displacement64 = 0;
+         const bool has_symbol = SymFromAddr(process, frame.AddrPC.Offset, &displacement64, symbol);
+
+         // Resolve source file & line
+         IMAGEHLP_LINE64 line_info{};
+         line_info.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+         DWORD displacement32 = 0;
+         const bool has_line = SymGetLineFromAddr64(process, frame.AddrPC.Offset, &displacement32, &line_info);
+
+         // Resolve module name
+         HMODULE frame_module = nullptr;
+         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(frame.AddrPC.Offset), &frame_module);
+         char mod_name[MAX_PATH]{};
+         if (frame_module) GetModuleFileNameA(frame_module, mod_name, MAX_PATH);
+         const char* mod_short = strrchr(mod_name, '\\');
+         mod_short = mod_short ? mod_short + 1 : mod_name;
+
+         std::ostringstream entry;
+         entry << "  [" << i << "] ";
+         entry << std::hex << "0x" << frame.AddrPC.Offset << std::dec;
+         if (has_symbol) entry << "  " << symbol->Name << "+0x" << std::hex << displacement64 << std::dec;
+         if (mod_short[0]) entry << "  (" << mod_short << ")";
+         if (has_line) entry << "  " << line_info.FileName << ":" << line_info.LineNumber;
+         entry << "\n";
+
+         log_file << entry.str();
+      }
+
+      SymCleanup(process);
+
+      log_file << "\n" << std::flush;
+      log_file.close();
+
+      return EXCEPTION_CONTINUE_SEARCH;
+   }
+
+   // Call once during initialization to register the crash handler.
+   inline void Install()
+   {
+      SetUnhandledExceptionFilter(UnhandledExceptionHandler);
+   }
+}
+#endif // TEST
 
 // A macro wraper for the assert macro.
 // Example usage            : ensure(device->CreateTexture2D(&desc, nullptr, &tex), == S_OK);

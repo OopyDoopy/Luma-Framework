@@ -25,8 +25,8 @@ class GenericGame final : public Game
 public:
    void OnInit(bool async) override
    {
-      luma_settings_cbuffer_index = 13;
-      luma_data_cbuffer_index = 12;
+      luma_settings_cbuffer_index =8;
+      luma_data_cbuffer_index =9;
    }
 
    void OnCreateDevice(ID3D11Device* native_device, DeviceData& device_data) override
@@ -136,9 +136,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
       swapchain_format_upgrade_type = TextureFormatUpgradesType::AllowedEnabled;
       swapchain_upgrade_type = SwapchainUpgradeType::scRGB;
-      texture_format_upgrades_type = TextureFormatUpgradesType::AllowedEnabled;
-      enable_indirect_texture_format_upgrades = true; // This is generally safer so enable it in the generic mod
-      enable_chain_indirect_texture_format_upgrades = ChainTextureFormatUpgradesType::DirectDependencies; // Indirect dependencies are probably not needed as they'd already be upgraded too
+      texture_format_upgrades_type = TextureFormatUpgradesType::None;
+      enable_indirect_texture_format_upgrades = false; // This is generally safer so enable it in the generic mod
+      enable_chain_indirect_texture_format_upgrades = ChainTextureFormatUpgradesType::None; // Indirect dependencies are probably not needed as they'd already be upgraded too
       toggleable_texture_upgrade_formats = {
             reshade::api::format::r8g8b8a8_unorm,
             reshade::api::format::r8g8b8a8_unorm_srgb,

@@ -1,0 +1,11 @@
+I am looking to do a universal patch to upgrade dithering in unreal engine games based on a fix I did for a specific game (FF7 Remake). The upgrade consist in using higher randomization when sampling the noise texsture to avoid dlss to accumulate patterns as details, this is used for transparent materials. For non transparent materials I remove dithering altogether by fixing the value sampled from the noise texture to a neutral value 0.5 in the unorm texture. 
+
+I want you to review and analyze shaders that I have identify as using dithering to draw materials and identify a common algorithm that can accomplish the following things.
+
+1. identify the index of the noise texture based on usage patterns as well as if it is a 2d 1d or 3d texture by scanning the bytecode object live before compilation, similarly to how I do for TAA detection.
+
+2. tell me what you think is the best appraoch to help reduce screen space patterns from forming when using dlss, whether I should upgrade the noise texture to a higher resolution 3d as well as add randomization. Whether I should fix the value to a neutral one like 0.5 or whether I should do some real random number. Analyze which one might require less effort to do considering we are patching the bytecode and modifying the rendering pipeline using reverse engineering methods. analyze any potential side effects from doing each type of modification if possible.
+
+I have provided several samples from different games hlsl and asm files. as well as one sample of a fix I did in ff7 remake  I have also provided the cpp code I have used to detect TAA and other shaders so that you can use as reference for estimating viable implementations. I have also added some code from ff7 that modifies the original bytecode to fix dithering. any code related to ff7 remake is to only be used as reference of what I did for that, and how to use the codebase, FF7 is heavily customized UE and can't be assumed as any standard.
+
+the goal is to add a new function that will detect if the shader is applying dithering in shader_detect and another function to modify the shader with one of our solutions.
