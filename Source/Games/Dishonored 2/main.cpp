@@ -57,10 +57,13 @@ namespace
    ShaderHashesList shader_hashes_UnprojectDepth;
    ShaderHashesList shader_hashes_SSAO;
    ShaderHashesList shader_hashes_Downsample;
+   ShaderHashesList shader_hashes_LensDistortion;
 
    // XeGTAO
    constexpr size_t XE_GTAO_DEPTH_MIP_LEVELS = 5;
    bool g_xegtao_enable = true;
+
+   bool g_disable_lens_distortion;
 
 #if DEVELOPMENT
    std::thread::id global_cbuffer_thread_id;
@@ -559,6 +562,18 @@ public:
       if (original_shader_hashes.Contains(shader_hashes_Downsample))
       {
          native_device_context->PSSetConstantBuffers(3, 1, &game_device_data.cb_taa_b2);
+
+         return DrawOrDispatchOverrideType::None;
+      }
+
+      if (original_shader_hashes.Contains(shader_hashes_LensDistortion))
+      {
+         if (g_disable_lens_distortion)
+         {
+            return DrawOrDispatchOverrideType::Skip;
+         }
+
+         return DrawOrDispatchOverrideType::None;
       }
 
       if (original_shader_hashes.Contains(shader_hashes_TAA))
@@ -1068,6 +1083,7 @@ public:
       reshade::api::effect_runtime* runtime = nullptr;
 
       reshade::get_config_value(runtime, NAME, "XeGTAOEnable", g_xegtao_enable);
+      reshade::get_config_value(runtime, NAME, "DisableLensDistortion", g_disable_lens_distortion);
    }
 
    void DrawImGuiSettings(DeviceData& device_data) override
@@ -1081,6 +1097,11 @@ public:
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       {
          ImGui::SetTooltip("Replaces SSAO if enabled, HBAO+ has to be disabled in game.");
+      }
+
+      if (ImGui::Checkbox("Disable Lens Distortion", &g_disable_lens_distortion))
+      {
+         reshade::set_config_value(runtime, NAME, "DisableLensDistortion", g_disable_lens_distortion);
       }
    }
 
@@ -1205,6 +1226,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       shader_hashes_UnprojectDepth.compute_shaders.emplace(std::stoul("74E15FB8", nullptr, 16)); // DH DOTO
       shader_hashes_SSAO.pixel_shaders.emplace(0x94445D2D); // DH2 + DH DOTO
       shader_hashes_Downsample.pixel_shaders.emplace(0x42873B15);
+      shader_hashes_LensDistortion.pixel_shaders.emplace(0x152A9E10);
       // All UI pixel shaders (these are all Shader Model 4.0, as opposed to the rest of the rendering using SM5.0)
       shader_hashes_UI.pixel_shaders = {
          std::stoul("6FE8114D", nullptr, 16),
