@@ -957,6 +957,9 @@ public:
             ASSERT_ONCE(sr_instance_data);
 
             std::array<uint32_t, 2> dlss_render_resolution = FindClosestIntegerResolutionForAspectRatio((double)device_data.output_resolution.x * (double)device_data.sr_render_resolution_scale, (double)device_data.output_resolution.y * (double)device_data.sr_render_resolution_scale, (double)device_data.output_resolution.x / (double)device_data.output_resolution.y);
+            uint32_t render_width_dlss = std::lrintf(device_data.render_resolution.x);
+            uint32_t render_height_dlss = std::lrintf(device_data.render_resolution.y);
+
             SR::SettingsData settings_data;
             settings_data.output_width = device_data.output_resolution.x;
             settings_data.output_height = device_data.output_resolution.y;
@@ -968,13 +971,16 @@ public:
             settings_data.mvs_jittered = false;
             settings_data.render_preset = dlss_render_preset;
             settings_data.auto_exposure = true;
+
+            // MVs are in UV space so we need to scale them to screen space for DLSS,
+            // aslo we need to flip sighn on both for DLSS.
+            settings_data.mvs_x_scale = -(float)render_width_dlss;
+            settings_data.mvs_y_scale = -(float)render_height_dlss;
+
             sr_implementations[device_data.sr_type]->UpdateSettings(sr_instance_data, native_device_context.get(), settings_data);
 
             bool reset_dlss = device_data.force_reset_sr;
             device_data.force_reset_sr = false;
-
-            uint32_t render_width_dlss = std::lrintf(device_data.render_resolution.x);
-            uint32_t render_height_dlss = std::lrintf(device_data.render_resolution.y);
 
             float dlss_pre_exposure = 1.0;
             SR::SuperResolutionImpl::DrawData draw_data;
@@ -984,8 +990,12 @@ public:
             draw_data.depth_buffer = game_device_data.depth_buffer.get();
             draw_data.exposure = nullptr;
             draw_data.pre_exposure = dlss_pre_exposure;
-            draw_data.jitter_x = projection_jitters.x;
-            draw_data.jitter_y = projection_jitters.y;
+
+            // We need to swap jitters. Are they originally swapped or it's just DLSS things?
+            // Jitters are in UV offsets so we need to scale them to pixel offsets for DLSS.
+            draw_data.jitter_x = cb_per_view_global.cb_jittervectors.y * (float)render_height_dlss;
+            draw_data.jitter_y = cb_per_view_global.cb_jittervectors.x * (float)render_width_dlss;
+
             draw_data.reset = reset_dlss;
             draw_data.render_width = render_width_dlss;
             draw_data.render_height = render_height_dlss;
