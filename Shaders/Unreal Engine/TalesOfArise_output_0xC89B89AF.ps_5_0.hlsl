@@ -1,6 +1,6 @@
-#include "../../Includes/Common.hlsl"
+#include "./includes/Common.hlsl"
 
-// ---- Created with 3Dmigoto v1.3.16 on Sun May 11 12:22:43 2025
+// ---- Created with 3Dmigoto v1.3.16 on Thu Sep 11 17:44:43 2025
 Texture2D<float4> t5 : register(t5);
 
 Texture3D<float4> t4 : register(t4);
@@ -146,13 +146,7 @@ void main(
     r0.w = sin(r0.w);
     r0.w = 493013 * r0.w;
     r0.w = frac(r0.w);
-    r0.xyz = v1.xxx * r0.xyz;
-    r2.xy = cb0[40].xx * v1.yz;
-    r1.z = dot(r2.xy, r2.xy);
-    r1.z = 1 + r1.z;
-    r1.z = rcp(r1.z);
-    r1.z = r1.z * r1.z;
-    r0.xyz = r0.xyz * r1.zzz + float3(0.00266771927,0.00266771927,0.00266771927);
+    r0.xyz = r0.xyz * v1.xxx + float3(0.00266771927,0.00266771927,0.00266771927);
     r0.xyz = log2(r0.xyz);
     r0.xyz = saturate(r0.xyz * float3(0.0714285746,0.0714285746,0.0714285746) + float3(0.610726953,0.610726953,0.610726953));
     r0.xyz = r0.xyz * float3(0.96875,0.96875,0.96875) + float3(0.015625,0.015625,0.015625);
@@ -162,12 +156,12 @@ void main(
     r0.w = r0.w * 0.00390625 + -0.001953125;
     r1.xyw = r0.xyz * float3(1.04999995,1.04999995,1.04999995) + r0.www;
   }
-
+  
   //r0.xyz = log2(r1.xyw);
   //r0.xyz = cb0[50].www * r0.xyz;
   //o0.xyz = exp2(r0.xyz);
 
   o0.rgb = safePow(r1.xyw, cb0[50].w);
-
+  
   return;
 }

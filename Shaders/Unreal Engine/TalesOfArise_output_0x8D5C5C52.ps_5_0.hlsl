@@ -1,6 +1,6 @@
-#include "../../Includes/Common.hlsl"
+#include "./includes/Common.hlsl"
 
-// ---- Created with 3Dmigoto v1.3.16 on Thu Sep 11 20:32:59 2025
+// ---- Created with 3Dmigoto v1.3.16 on Sun May 11 12:22:43 2025
 Texture2D<float4> t5 : register(t5);
 
 Texture3D<float4> t4 : register(t4);
@@ -56,11 +56,30 @@ void main(
   float4 v4 : SV_POSITION0,
   out float4 o0 : SV_Target0)
 {
-  float4 r0,r1,r2,r3,r4;
+  float4 r0,r1,r2,r3,r4,r5;
   uint4 bitmask, uiDest;
   float4 fDest;
 
   r0.xyz = t2.Sample(s2_s, v0.xy).xyz;
+  r1.xyz = t2.SampleLevel(s2_s, v0.xy, 0, int2(-1, 0)).xyz;
+  r2.xyz = t2.SampleLevel(s2_s, v0.xy, 0, int2(1, 0)).xyz;
+  r3.xyz = t2.SampleLevel(s2_s, v0.xy, 0, int2(-1, -1)).xyz;
+  r4.xyz = t2.SampleLevel(s2_s, v0.xy, 0, int2(-1, 1)).xyz;
+  r0.w = dot(r0.xyz, float3(0.300000012,0.589999974,0.109999999));
+  r5.x = dot(r1.xyz, float3(0.300000012,0.589999974,0.109999999));
+  r5.y = dot(r2.xyz, float3(0.300000012,0.589999974,0.109999999));
+  r5.z = dot(r3.xyz, float3(0.300000012,0.589999974,0.109999999));
+  r5.w = dot(r4.xyz, float3(0.300000012,0.589999974,0.109999999));
+  r5.xyzw = -r5.xyzw + r0.wwww;
+  r5.xy = max(abs(r5.xz), abs(r5.yw));
+  r0.w = max(r5.x, r5.y);
+  r0.w = saturate(-v1.x * r0.w + 1);
+  r0.w = cb0[40].y * -r0.w;
+  r1.xyz = r2.xyz + r1.xyz;
+  r1.xyz = r1.xyz + r3.xyz;
+  r1.xyz = r1.xyz + r4.xyz;
+  r1.xyz = -r0.xyz * float3(4,4,4) + r1.xyz;
+  r0.xyz = r1.xyz * r0.www + r0.xyz;
   r1.xy = max(cb0[44].xy, v0.xy);
   r1.xy = min(cb0[44].zw, r1.xy);
   r1.xyz = t3.Sample(s3_s, r1.xy).xyz;
@@ -143,7 +162,7 @@ void main(
     r0.w = r0.w * 0.00390625 + -0.001953125;
     r1.xyw = r0.xyz * float3(1.04999995,1.04999995,1.04999995) + r0.www;
   }
-  
+
   //r0.xyz = log2(r1.xyw);
   //r0.xyz = cb0[50].www * r0.xyz;
   //o0.xyz = exp2(r0.xyz);
