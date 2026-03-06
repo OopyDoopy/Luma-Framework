@@ -499,7 +499,7 @@ public:
       auto CheckAndHandleRenderPassTransition = [native_device_context, &cmd_list_data, &device_data, &game_device_data](ID3D11RenderTargetView** render_target_views, ID3D11DepthStencilView* depth_stencil_view)
       {
          com_ptr<ID3D11Resource> resource;
-         render_target_views[0]->GetResource(&resource);
+         render_target_views[1]->GetResource(&resource);
          if (!resource)
          {
             return DrawOrDispatchOverrideType::None;
@@ -513,9 +513,10 @@ public:
          D3D11_TEXTURE2D_DESC tex_desc;
          tex->GetDesc(&tex_desc);
 
-         // the normal gbuffer is DXGI_FORMAT_R11G11B10_FLOAT
-         // for planar reflection it will be the standart scene color format(DXGI_FORMAT_R10G10B10A2_UNORM)
-         if (tex_desc.Format != DXGI_FORMAT_R11G11B10_FLOAT)
+         // the normal gbuffer is DXGI_FORMAT_R10G10B10A2_UNORM (or DXGI_FORMAT_R16G16B16A16_FLOAT when upgraded by renodx)
+         // for planar reflections render target 1 is DXGI_FORMAT_R8G8B8A8_UNORM
+         if (tex_desc.Format != DXGI_FORMAT_R10G10B10A2_UNORM &&
+             tex_desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
          {
             game_device_data.frame_phase = FramePhase::REFLECTION;
          }
