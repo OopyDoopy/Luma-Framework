@@ -1,5 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cfloat>
+
 struct ID3D11Device;
 struct ID3D11DeviceContext;
 struct ID3D11Resource;
