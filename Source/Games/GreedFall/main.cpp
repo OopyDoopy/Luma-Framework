@@ -370,8 +370,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       Globals::DEVELOPMENT_STATE = Globals::ModDevelopmentState::Playable;
       Globals::VERSION = 1;
 
-      enable_samplers_upgrade = true;
-
       shader_hashes_TAA.pixel_shaders.emplace(std::stoul("E4371F05", nullptr, 16));
 
       swapchain_upgrade_type = SwapchainUpgradeType::None;
