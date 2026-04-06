@@ -64,7 +64,7 @@ namespace SR
 	
 	static float GetMipLODBias(float render_height, float output_height)
 	{
-		return std::log2(float(render_height) / float(std::max(render_height, output_height))) - 1.f;
+		return std::log2(float(render_height) / float((std::max)(render_height, output_height))) - 1.f;
 	}
 	static float GetMipLODBias(unsigned int render_height, unsigned int output_height)
 	{
