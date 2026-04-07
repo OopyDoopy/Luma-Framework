@@ -10499,8 +10499,12 @@ namespace
                                        // Hacky way of retrieving the data if the tracked buffer was in a deferred command list and hence couldn't be mapped there
                                        if (!device_data.track_buffer_data.data_valid && device_data.track_buffer_data.cb)
                                        {
-                                          com_ptr<ID3D11DeviceContext> native_device_context;
-                                          HRESULT hr = draw_call_data.command_list->QueryInterface(&native_device_context);
+                                          // Make sure we have the immediate context, because MapBufferData will fail otherwise.
+                                          ComPtr<ID3D11Device> native_device;
+                                          draw_call_data.command_list->GetDevice(native_device.put());
+                                          ComPtr<ID3D11DeviceContext> native_device_context;
+                                          native_device->GetImmediateContext(native_device_context.put());
+
                                           D3D11_BUFFER_DESC desc = {};
                                           device_data.track_buffer_data.cb->GetDesc(&desc);
                                           device_data.track_buffer_data.data_valid = MapBufferData(device_data.track_buffer_data.cb, native_device_context.get(), device_data.track_buffer_data.data, desc.ByteWidth);
