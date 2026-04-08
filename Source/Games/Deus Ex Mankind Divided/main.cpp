@@ -1,5 +1,10 @@
 #define GAME_DEUS_EX_MANKIND_DIVIDED 1
 
+#define CHECK_GRAPHICS_API_COMPATIBILITY 1
+
+// Any message box breaks the input of the game forever
+#define DISABLE_AUTO_DEBUGGER 1
+
 #include "..\..\Core\core.hpp"
 
 class GameDeusExMankindDivided final : public Game
