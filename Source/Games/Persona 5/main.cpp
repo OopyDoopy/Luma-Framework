@@ -1,6 +1,5 @@
 #define GAME_PERSONA_5 1
 
-#define ALLOW_SHADERS_DUMPING 0
 #define DISABLE_DISPLAY_COMPOSITION 1
 #define ENABLE_NGX 1
 #define ENABLE_FIDELITY_SK 1
@@ -25,6 +24,15 @@ struct ReplacementTexture
    com_ptr<ID3D11RenderTargetView> rtv;
    D3D11_TEXTURE2D_DESC desc;
    bool in_use = false;
+};
+
+struct GFD_VSCONST_VIEWPROJ
+{
+   float4x4 mtxViewProj;
+   float4x4 mtxView;
+   float3 eyePosition;
+   float _reserved_b2;
+   float4x4 mtxPrevViewProj;
 };
 
 namespace
@@ -76,6 +84,7 @@ struct GameDeviceDataPersona5 final : public GameDeviceData
    com_ptr<ID3D11Buffer> modifiable_index_vertex_buffer;
    uint2 render_resolution = {};
    uint2 target_resolution = {};
+   float fov = 0.0f;
 
    // variables used to fix motion vectors on non-skinned moving objects
    std::unordered_map<uint32_t, float4x4> prev_local_to_view_lookup;
@@ -105,7 +114,6 @@ class Persona5 final : public Game
 public:
    void OnInit(bool async) override
    {
-      native_shaders_definitions.emplace(CompileTimeStringHash("Add Jitter"), ShaderDefinition{"Luma_ViewProjAddJitter", reshade::api::pipeline_subobject_type::compute_shader});
       native_shaders_definitions.emplace(CompileTimeStringHash("Update Shadow Constants"), ShaderDefinition{"Luma_UpdateShadowConstants", reshade::api::pipeline_subobject_type::compute_shader});
       native_shaders_definitions.emplace(CompileTimeStringHash("Decode Motion Vector"), ShaderDefinition{"Luma_DecodeMotionVector", reshade::api::pipeline_subobject_type::compute_shader});
       native_shaders_definitions.emplace(CompileTimeStringHash("Merge"), ShaderDefinition{"Luma_CopyDsrResult", reshade::api::pipeline_subobject_type::compute_shader});
@@ -552,20 +560,26 @@ public:
 
                if (constant_buffers[1])
                {
-                  cb_luma_global_settings.GameSettings.JitterOffset.x = 2.0f * projection_jitters.x / (float)target_desc.Width;
-                  cb_luma_global_settings.GameSettings.JitterOffset.y = 2.0f * projection_jitters.y / (float)target_desc.Height;
-                  device_data.cb_luma_global_settings_dirty = true;
-                  SetLumaConstantBuffers(native_device_context, cmd_list_data, device_data, reshade::api::shader_stage::compute, LumaConstantBufferType::LumaSettings);
+                  auto it = game_device_data.cbuffer_cache.find(constant_buffers[1].get());
+                  if (it != game_device_data.cbuffer_cache.cend())
+                  {
+                     GFD_VSCONST_VIEWPROJ* view_proj_data = (GFD_VSCONST_VIEWPROJ*)it->second.data();
+                     float4x4 inv_view = view_proj_data->mtxView.GetTransposed().GetInverted();
+                     float4x4 proj = inv_view * view_proj_data->mtxViewProj.GetTransposed();
+                     float4x4 inv_proj = proj.GetInverted();
+                     // assume that projection doesn't change between frames
+                     float4x4 prev_view = view_proj_data->mtxPrevViewProj.GetTransposed() * inv_proj;
 
-                  ID3D11Buffer* cbs[] = {constant_buffers[1].get()};
-                  ID3D11UnorderedAccessView* uavs[] = {game_device_data.scratch_constant_buffer_uav.get()};
+                     proj.m20 -= 2.0f * projection_jitters.x / (float)target_desc.Width;
+                     proj.m21 += 2.0f * projection_jitters.y / (float)target_desc.Height;
 
-                  native_device_context->CSSetShader(device_data.native_compute_shaders[CompileTimeStringHash("Add Jitter")].get(), nullptr, 0);
-                  native_device_context->CSSetConstantBuffers(0, 1, cbs);
-                  native_device_context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-                  native_device_context->Dispatch(1, 1, 1);
+                     view_proj_data->mtxViewProj = (view_proj_data->mtxView.GetTransposed() * proj).GetTransposed();
+                     view_proj_data->mtxPrevViewProj = (prev_view * proj).GetTransposed();
 
-                  native_device_context->CopySubresourceRegion(constant_buffers[1].get(), 0, 0, 0, 0, game_device_data.scratch_constant_buffer.get(), 0, nullptr);
+                     native_device_context->UpdateSubresource(constant_buffers[1].get(), 0, nullptr, it->second.data(), 0, 0);
+
+                     game_device_data.fov = 2.0f * atan(1.0f / proj.m11);
+                  }
                }
             }
          }
@@ -917,9 +931,12 @@ public:
                draw_data.output_color = game_device_data.resolve_texture.get();
                draw_data.motion_vectors = game_device_data.decoded_motion_vectors.get();
                draw_data.depth_buffer = game_device_data.depth_texture.get();
+               draw_data.render_width = game_device_data.render_resolution.x;
+               draw_data.render_height = game_device_data.render_resolution.y;
                draw_data.pre_exposure = 0.0f;
                draw_data.jitter_x = projection_jitters.x;
                draw_data.jitter_y = projection_jitters.y;
+               draw_data.vert_fov = game_device_data.fov;
                draw_data.reset = device_data.force_reset_sr;
 
                bool dlss_succeeded = sr_implementations[device_data.sr_type]->Draw(sr_instance_data, native_device_context.get(), draw_data);

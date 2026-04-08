@@ -170,10 +170,9 @@ namespace SR
 
 			// Optional data:
 			ID3D11Resource* exposure = nullptr; // Can be left nullptr to default to 1 or to auto exposure
-         ID3D11Resource* bias_mask = nullptr; // Reactivity/Bias mask (might not be used by all SR implementations)
-         ID3D11Resource* transparency_alpha = nullptr; // Amount of intensity in this pixel (only used by some FSR implementations)
+			ID3D11Resource* bias_mask = nullptr; // Reactivity/Bias mask (might not be used by all SR implementations)
+			ID3D11Resource* transparency_alpha = nullptr; // Amount of intensity in this pixel (only used by some FSR implementations)
 
-			// Can be left to 0 to pick the default/target render res.
 			unsigned int render_width = 0;
 			unsigned int render_height = 0;
 
