@@ -2547,12 +2547,12 @@ namespace
    // Prevent games from pausing when alt tabbing out of it (e.g. when editing shaders) by silencing focus loss events
    LRESULT WINAPI CustomWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
    {
-      if (lParam == WM_KILLFOCUS)
+      if (msg == WM_KILLFOCUS)
       {
          // Lost keyboard focus
          return 0; // block it
       }
-      else if (lParam == WM_ACTIVATE)
+      else if (msg == WM_ACTIVATE)
       {
          if (wParam == WA_INACTIVE)
          {
@@ -2772,7 +2772,7 @@ namespace
          if (window_changed)
          {
             game_window = swapchain_desc.OutputWindow; // This shouldn't really need any thread safety protection
-#if DEVELOPMENT //TODOFT: test/fix/finish
+#if DEVELOPMENT && !defined(DISABLE_FOCUS_LOSS_SUPPRESSION) //TODOFT: test/fix/finish
             if (game_window)
             {
 #if 1
