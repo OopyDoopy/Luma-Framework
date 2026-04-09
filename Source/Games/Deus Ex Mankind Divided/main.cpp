@@ -42,10 +42,13 @@ struct alignas(16) cbSharedPerViewData
 namespace
 {
     const ShaderHashesList shader_hashes_TAA = { .compute_shaders = { 0x84EF14ED } };
+    const ShaderHashesList shader_hashes_LastKnownLocation { .pixel_shaders = { 0xA6A0E453, 0xE30A40E6 } };
 
     void* g_cbSharedPerViewData_mapped_data;
     uintptr_t g_cbSharedPerViewData_handle;
     cbSharedPerViewData g_cbSharedPerViewData_data;
+
+    bool g_disable_last_known_location;
 }
 
 struct GameDeviceDataDeusExMankindDivided final : GameDeviceData
@@ -74,11 +77,26 @@ public:
     {
         // ### Update these (find the right values) ###
         // ### See the "GameCBuffers.hlsl" in the shader directory to expand settings ###
-        // Even 8 might be wrong here! TODO: Recheck this.
+        // FIXME: The game is using all CB slots!
         luma_settings_cbuffer_index = 8;
         luma_data_cbuffer_index = -1;
 
         native_shaders_definitions.emplace(CompileTimeStringHash("DeusExMD Post DLSS CS"), ShaderDefinition("Luma_DeusExMD_Post_DLSS_CS", reshade::api::pipeline_subobject_type::compute_shader));
+    }
+
+    void LoadConfigs() override
+    {
+        reshade::get_config_value(nullptr, NAME, "DisableLastKnownLocation", g_disable_last_known_location);
+    }
+
+    void DrawImGuiSettings(DeviceData& device_data) override
+    {
+        ImGui::NewLine();
+
+        if (ImGui::Checkbox("Disable last known location", &g_disable_last_known_location))
+        {
+            reshade::set_config_value(nullptr, NAME, "DisableLastKnownLocation", g_disable_last_known_location);
+        }
     }
 
     void OnCreateDevice(ID3D11Device* native_device, DeviceData& device_data) override
@@ -117,6 +135,15 @@ public:
     DrawOrDispatchOverrideType OnDrawOrDispatch(ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, CommandListData& cmd_list_data, DeviceData& device_data, reshade::api::shader_stage stages, const ShaderHashesList<OneShaderPerPipeline>& original_shader_hashes, bool is_custom_pass, bool& updated_cbuffers, std::function<void()>* original_draw_dispatch_func) override
     {
         auto& game_device_data = GetGameDeviceData(device_data);
+
+        if (original_shader_hashes.Contains(shader_hashes_LastKnownLocation))
+        {
+            if (g_disable_last_known_location)
+            {
+                return DrawOrDispatchOverrideType::Replaced;
+            }
+            return DrawOrDispatchOverrideType::None;
+        }
 
         if (original_shader_hashes.Contains(shader_hashes_TAA))
         {
@@ -247,6 +274,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // TODO: Remove this later!
         Globals::DEVELOPMENT_STATE = Globals::ModDevelopmentState::WorkInProgress;
+
+        #if DEVELOPMENT
+        forced_shader_names.emplace(0xDA65F8ED, "Sharpen");
+        forced_shader_names.emplace(0x84EF14ED, "TAA");
+        forced_shader_names.emplace(0xA6A0E453, "LastKnownLocation");
+        forced_shader_names.emplace(0xE30A40E6, "LastKnownLocation");
+        #endif
 
         game = new GameDeusExMankindDivided();
     }
