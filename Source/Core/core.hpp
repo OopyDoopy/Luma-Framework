@@ -6769,7 +6769,7 @@ namespace
 
          desc.MaxAnisotropy = D3D11_REQ_MAXANISOTROPY;
 
-         if (samplers_upgrade_mode == 5) // Bruteforce the offset
+         if (samplers_upgrade_mode >= 5) // Bruteforce the offset
          {
             desc.MipLODBias = std::clamp(device_data.texture_mip_lod_bias_offset, D3D11_MIP_LOD_BIAS_MIN, D3D11_MIP_LOD_BIAS_MAX); // Setting this out of range (~ +/- 16) will make DX11 crash
          }
@@ -6777,6 +6777,10 @@ namespace
          {
             desc.MipLODBias = std::clamp(desc.MipLODBias + device_data.texture_mip_lod_bias_offset, D3D11_MIP_LOD_BIAS_MIN, D3D11_MIP_LOD_BIAS_MAX); // Setting this out of range (~ +/- 16) will make DX11 crash
          }
+
+         float bias_difference = desc.MipLODBias - original_desc.MipLODBias;
+         desc.MinLOD = max(desc.MinLOD + min(bias_difference, 0.f), 0.f);
+
          // TODO: Clean up the code. Other "samplers_upgrade_mode" values aren't supported outside of development (because they aren't even needed, until proven otherwise)
       }
       else
@@ -6848,7 +6852,12 @@ namespace
          }
          if (samplers_upgrade_mode >= 6)
          {
-            desc.MinLOD = min(desc.MinLOD, 0.f);
+            desc.MinLOD = 0.f;
+         }
+         else
+         {
+            float bias_difference = desc.MipLODBias - original_desc.MipLODBias;
+            desc.MinLOD = max(desc.MinLOD + min(bias_difference, 0.f), 0.f);
          }
       }
 #endif // !DEVELOPMENT
@@ -7969,7 +7978,7 @@ namespace
 #if DEVELOPMENT && 0
                // If recursive (already cloned) sampler ptrs are set, it's either because:
                // - the game created the same sampler as one of our upgraded ones, and in DX11 state objects used a shared pool memory so if you try to create two with the same desc, it returns the previously created one
-               // - the game somehow got the pointers (e.g. DX get samples functions) and is re-using them
+               // - the game somehow got the Luma upgraded samplers pointers (e.g. DX get samples functions) and is re-using them
                // this seems to happen when we change the ImGui settings for samplers a lot and quickly in Prey. It also happens in Mafia III and BioShock 2 Remastered. It shouldn't really hurt as they don't pass through the same init function.
                bool recursive_or_null = sampler.handle == 0;
                for (const auto& samplers_handle : device_data.custom_sampler_by_original_sampler)
