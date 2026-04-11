@@ -593,11 +593,11 @@ public:
 
       if (game_device_data.frame_phase == FramePhase::SHADOW_MAP)
       {
-          if (original_shader_hashes.Contains(shader_hashes_ui))
-          {
-              game_device_data.frame_phase = FramePhase::UI_ONLY;
-              return DrawOrDispatchOverrideType::None;
-          }
+         if (original_shader_hashes.Contains(shader_hashes_ui))
+         {
+            game_device_data.frame_phase = FramePhase::UI_ONLY;
+            return DrawOrDispatchOverrideType::None;
+         }
          if (!game_device_data.render_target_changed)
          {
             return DrawOrDispatchOverrideType::None;
@@ -804,28 +804,28 @@ public:
 
       if (SrActive(device_data) &&
           (original_shader_hashes.Contains(shader_hashes_fxaa) ||
-              original_shader_hashes.Contains(shader_hashes_smaa_blending)))
+             original_shader_hashes.Contains(shader_hashes_smaa_blending)))
       {
-          com_ptr<ID3D11ShaderResourceView> srv;
-          native_device_context->PSGetShaderResources(0, 4, &srv);
-          com_ptr<ID3D11RenderTargetView> rtv;
-          native_device_context->OMGetRenderTargets(1, &rtv, nullptr);
+         com_ptr<ID3D11ShaderResourceView> srv;
+         native_device_context->PSGetShaderResources(0, 4, &srv);
+         com_ptr<ID3D11RenderTargetView> rtv;
+         native_device_context->OMGetRenderTargets(1, &rtv, nullptr);
 
-          com_ptr<ID3D11Resource> srv_resource;
-          srv->GetResource(&srv_resource);
+         com_ptr<ID3D11Resource> srv_resource;
+         srv->GetResource(&srv_resource);
 
-          com_ptr<ID3D11Resource> rtv_resource;
-          rtv->GetResource(&rtv_resource);
+         com_ptr<ID3D11Resource> rtv_resource;
+         rtv->GetResource(&rtv_resource);
 
-          native_device_context->CopySubresourceRegion(rtv_resource.get(), 0, 0, 0, 0, srv_resource.get(), 0, nullptr);
+         native_device_context->CopySubresourceRegion(rtv_resource.get(), 0, 0, 0, 0, srv_resource.get(), 0, nullptr);
 
-          return DrawOrDispatchOverrideType::Skip;
+         return DrawOrDispatchOverrideType::Skip;
       }
       else if (SrActive(device_data) &&
-          (original_shader_hashes.Contains(shader_hashes_smaa_edge_detection) ||
-              original_shader_hashes.Contains(shader_hashes_smaa_weight_calculation)))
+               (original_shader_hashes.Contains(shader_hashes_smaa_edge_detection) ||
+                  original_shader_hashes.Contains(shader_hashes_smaa_weight_calculation)))
       {
-          return DrawOrDispatchOverrideType::Skip;
+         return DrawOrDispatchOverrideType::Skip;
       }
 
       return DrawOrDispatchOverrideType::None;
@@ -863,7 +863,8 @@ public:
          std::shared_lock shared_lock_samplers(s_mutex_samplers);
          if (SrActive(device_data) &&
              game_device_data.render_resolution.y > 0.0f &&
-             game_device_data.target_resolution.y > 0.0f)
+             game_device_data.target_resolution.y > 0.0f &&
+             game_device_data.render_resolution.x != 3840.0f) // upgrading samplers break mip based effect at 4K
          {
             device_data.texture_mip_lod_bias_offset = SR::GetMipLODBias(game_device_data.render_resolution.y, game_device_data.target_resolution.y); // This results in -1 at output res
          }
@@ -1019,7 +1020,7 @@ public:
 
                if (game_device_data.render_resolution == game_device_data.target_resolution)
                {
-                   native_device_context->CopySubresourceRegion(game_device_data.source_color.get(), 0, 0, 0, 0, game_device_data.merged_texture.get(), 0, nullptr);
+                  native_device_context->CopySubresourceRegion(game_device_data.source_color.get(), 0, 0, 0, 0, game_device_data.merged_texture.get(), 0, nullptr);
                }
             }
          }
@@ -1205,6 +1206,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       Globals::VERSION = 1;
 
       enable_samplers_upgrade = true;
+      samplers_upgrade_mode = 3;
 
       shader_hashes_light.pixel_shaders.emplace(std::stoul("D434C03A", nullptr, 16));
       shader_hashes_light.pixel_shaders.emplace(std::stoul("5C4DD977", nullptr, 16));
