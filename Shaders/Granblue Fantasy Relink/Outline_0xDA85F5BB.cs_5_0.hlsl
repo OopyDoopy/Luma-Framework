@@ -84,7 +84,7 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
 
    r0.xyzw = (int4)vThreadID.xyxy;
    r1.xy = cmp(r0.zw >= screenSize_.xy);
-   r1.x = (int)r1.y | (int)r1.x;
+   r1.x = asfloat(asint(r1.y) | asint(r1.x));
    if (r1.x != 0)
    {
       return;
