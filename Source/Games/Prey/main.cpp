@@ -1641,8 +1641,8 @@ public:
          ;
       if (!is_valid_cbuffer)
       {
-         ASSERT_ONCE(false); // If this now never happened, we could remove the check...
-         return 1;
+         ASSERT_ONCE(false); // If this now never happened, we could remove the check... It actually does fail, on particles/transparent stuff
+         return false;
       }
 
 #if 0 // This happens, but it's not a problem
