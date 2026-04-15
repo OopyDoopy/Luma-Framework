@@ -268,6 +268,19 @@ public:
         auto& game_device_data = GetGameDeviceData(device_data);
 
         JitterUpdate(device_data.sr_type != SR::Type::None, device_data.render_resolution.x, device_data.render_resolution.y);
+
+        if (!custom_texture_mip_lod_bias_offset)
+        {
+            std::shared_lock shared_lock_samplers(s_mutex_samplers);
+            if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed)
+            {
+               device_data.texture_mip_lod_bias_offset = SR::GetMipLODBias(device_data.render_resolution.y, device_data.output_resolution.y); // This results in -1 at output res
+            }
+            else
+            {
+               device_data.texture_mip_lod_bias_offset = 0.0f;
+            }
+        }
     }
 
     void PrintImGuiAbout() override
@@ -304,6 +317,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         };
         // ### Check these if textures are not upgraded ###
         texture_format_upgrades_2d_size_filters = 0 | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainResolution | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainAspectRatio;
+
+        enable_samplers_upgrade = true;
 
         #if DEVELOPMENT
         forced_shader_names.emplace(0x978BFB09, "Tonemap");
