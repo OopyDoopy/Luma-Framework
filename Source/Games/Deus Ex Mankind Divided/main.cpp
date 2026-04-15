@@ -228,6 +228,9 @@ public:
 
                 //
 
+                auto release_com_array = [](auto& array){ for (auto* p : array) if (p) p->Release(); };
+                release_com_array(srvs);
+
                 return DrawOrDispatchOverrideType::Replaced;
             }
 
