@@ -135,7 +135,7 @@ struct TraceDrawCallData
    bool scissors = false;
    float4 viewport_0 = {};
    // Already includes all the render targets
-   D3D11_BLEND_DESC blend_desc = {};
+   D3D11_BLEND_DESC1 blend_desc = {};
    FLOAT blend_factor[4] = { 1.f, 1.f, 1.f, 1.f };
 
    bool cbs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};

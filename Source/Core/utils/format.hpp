@@ -1080,6 +1080,30 @@ namespace
       }
    }
 
+   const char* GetLogicOpName(D3D11_LOGIC_OP logicOp)
+   {
+      switch (logicOp)
+      {
+      case D3D11_LOGIC_OP_CLEAR:         return "CLEAR";
+      case D3D11_LOGIC_OP_SET:           return "SET";
+      case D3D11_LOGIC_OP_COPY:          return "COPY";
+      case D3D11_LOGIC_OP_COPY_INVERTED: return "COPY_INVERTED";
+      case D3D11_LOGIC_OP_NOOP:          return "NOOP";
+      case D3D11_LOGIC_OP_INVERT:        return "INVERT";
+      case D3D11_LOGIC_OP_AND:           return "AND";
+      case D3D11_LOGIC_OP_NAND:          return "NAND";
+      case D3D11_LOGIC_OP_OR:            return "OR";
+      case D3D11_LOGIC_OP_NOR:           return "NOR";
+      case D3D11_LOGIC_OP_XOR:           return "XOR";
+      case D3D11_LOGIC_OP_EQUIV:         return "EQUIV";
+      case D3D11_LOGIC_OP_AND_REVERSE:   return "AND_REVERSE";
+      case D3D11_LOGIC_OP_AND_INVERTED:  return "AND_INVERTED";
+      case D3D11_LOGIC_OP_OR_REVERSE:    return "OR_REVERSE";
+      case D3D11_LOGIC_OP_OR_INVERTED:   return "OR_INVERTED";
+      default:                           return "UNKNOWN";
+      }
+   }
+
    const char* GetFilterName(D3D11_FILTER filter)
    {
       switch (filter)

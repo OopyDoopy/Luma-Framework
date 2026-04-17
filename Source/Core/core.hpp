@@ -5899,7 +5899,7 @@ namespace
       native_device_context->OMGetBlendState(&blend_state, nullptr, nullptr);
       if (blend_state)
       {
-         D3D11_BLEND_DESC blend_desc;
+         D3D11_BLEND_DESC blend_desc; // TODO: check D3D11_BLEND_DESC1 stuff too (LogicOpEnable)?
          blend_state->GetDesc(&blend_desc);
          // Mirrored from UI shaders:
          // 0 No alpha blend (or other unknown blend types that we can ignore)
@@ -11152,7 +11152,7 @@ namespace
                                                 pop_text_style_color = true;
                                              }
 
-                                             const D3D11_RENDER_TARGET_BLEND_DESC& render_target_blend_desc = blend_desc.IndependentBlendEnable ? blend_desc.RenderTarget[i] : blend_desc.RenderTarget[0];
+                                             const D3D11_RENDER_TARGET_BLEND_DESC1& render_target_blend_desc = blend_desc.IndependentBlendEnable ? blend_desc.RenderTarget[i] : blend_desc.RenderTarget[0];
                                              // See "ui_data.blend_mode" for details on usage
                                              if (render_target_blend_desc.BlendEnable)
                                              {
@@ -11263,7 +11263,7 @@ namespace
                                                 }
 
                                                 // TODO: add "SampleMask" etc (stencil too, together with stencil debug draw, but that goes with depth)
-                                                ImGui::Text("Blend RGB Mode Details: Src %s - Op %s - Dest %s", GetBlendName(render_target_blend_desc.SrcBlend), GetBlendOpName(render_target_blend_desc.BlendOp), GetBlendName(render_target_blend_desc.DestBlend));
+                                                ImGui::Text("Blend RGB Mode Details: (Src * %s) %s (Dest * %s)", GetBlendName(render_target_blend_desc.SrcBlend), GetBlendOpName(render_target_blend_desc.BlendOp), GetBlendName(render_target_blend_desc.DestBlend));
 
                                                 bool has_drawn_blend_a_text = false;
 
@@ -11328,14 +11328,18 @@ namespace
                                                 if ((render_target_blend_desc.RenderTargetWriteMask & D3D11_COLOR_WRITE_ENABLE_ALPHA) == 0)
                                                 {
                                                    ImGui::SameLine();
-                                                   ImGui::Text(" (Ignored)");
+                                                   ImGui::Text("(Ignored)");
                                                 }
 
-                                                ImGui::Text("Blend A Mode Details: Src %s - Op %s - Dest %s", GetBlendName(render_target_blend_desc.SrcBlendAlpha), GetBlendOpName(render_target_blend_desc.BlendOpAlpha), GetBlendName(render_target_blend_desc.DestBlendAlpha));
+                                                ImGui::Text("Blend A Mode Details: (Src * %s) %s (Dest * %s)", GetBlendName(render_target_blend_desc.SrcBlendAlpha), GetBlendOpName(render_target_blend_desc.BlendOpAlpha), GetBlendName(render_target_blend_desc.DestBlendAlpha));
+                                             }
+                                             else if (render_target_blend_desc.LogicOpEnable)
+                                             {
+                                                ImGui::Text("Logic Op Mode: %s", GetLogicOpName(render_target_blend_desc.LogicOp));
                                              }
                                              else
                                              {
-                                                ImGui::Text("Blend Mode: Disabled");
+                                                ImGui::Text("Blend and Logic Op Mode: Disabled");
                                              }
 
                                              if (pop_text_style_color)

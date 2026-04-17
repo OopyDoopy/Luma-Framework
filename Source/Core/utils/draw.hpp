@@ -512,10 +512,34 @@ void AddTraceDrawCallData(std::vector<TraceDrawCallData>& trace_draw_calls_data,
          native_device_context->OMGetBlendState(&blend_state, trace_draw_call_data.blend_factor, nullptr);
          if (blend_state)
          {
-            D3D11_BLEND_DESC blend_desc;
-            blend_state->GetDesc(&blend_desc);
+            com_ptr<ID3D11BlendState1> blend_state_1;
+            blend_state->QueryInterface(&blend_state_1);
             // We always cache the last one used by the pipeline, hopefully it didn't change between draw calls
-            trace_draw_call_data.blend_desc = blend_desc;
+            D3D11_BLEND_DESC1 blend_desc_1 = {};
+            if (blend_state_1)
+            {
+               blend_state_1->GetDesc1(&blend_desc_1);
+            }
+            else
+            {
+               D3D11_BLEND_DESC blend_desc;
+               blend_state->GetDesc(&blend_desc);
+               blend_desc_1.AlphaToCoverageEnable = blend_desc.AlphaToCoverageEnable;
+               blend_desc_1.IndependentBlendEnable = blend_desc.IndependentBlendEnable;
+               for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+               {
+                  // The other parameters stay defaulted
+                  blend_desc_1.RenderTarget[i].BlendEnable           = blend_desc.RenderTarget[i].BlendEnable;
+                  blend_desc_1.RenderTarget[i].SrcBlend              = blend_desc.RenderTarget[i].SrcBlend;
+                  blend_desc_1.RenderTarget[i].DestBlend             = blend_desc.RenderTarget[i].DestBlend;
+                  blend_desc_1.RenderTarget[i].BlendOp               = blend_desc.RenderTarget[i].BlendOp;
+                  blend_desc_1.RenderTarget[i].SrcBlendAlpha         = blend_desc.RenderTarget[i].SrcBlendAlpha;
+                  blend_desc_1.RenderTarget[i].DestBlendAlpha        = blend_desc.RenderTarget[i].DestBlendAlpha;
+                  blend_desc_1.RenderTarget[i].BlendOpAlpha          = blend_desc.RenderTarget[i].BlendOpAlpha;
+                  blend_desc_1.RenderTarget[i].RenderTargetWriteMask = blend_desc.RenderTarget[i].RenderTargetWriteMask;
+               }
+            }
+            trace_draw_call_data.blend_desc = blend_desc_1;
             // We don't care for the alpha blend operation (source alpha * dest alpha) as alpha is never read back from destination
          }
 
@@ -951,7 +975,23 @@ void SetViewportFullscreen(ID3D11DeviceContext* device_context, uint2 size = {})
    device_context->RSSetViewports(viewports_num, &viewports[0]);
 }
 
-bool IsRTAlphaBlendDisabled(const D3D11_RENDER_TARGET_BLEND_DESC& rt_blend_desc)
+template<typename T>
+concept IsD3D11BlendDesc = std::is_same_v<T, D3D11_BLEND_DESC> || std::is_same_v<T, D3D11_BLEND_DESC1>;
+template<typename T>
+concept IsD3D11RenderTargetBlendDesc = std::is_same_v<T, D3D11_RENDER_TARGET_BLEND_DESC> || std::is_same_v<T, D3D11_RENDER_TARGET_BLEND_DESC1>;
+
+// Helper to determine if the logic op is effectively "Disabled" (Source overwrites Destination)
+bool IsRTLogicOpDisabled(const D3D11_RENDER_TARGET_BLEND_DESC1& rt_blend_desc)
+{
+    if (!rt_blend_desc.LogicOpEnable) return true;
+    
+    // NOOP: Dest = Dest (No change)
+    // COPY: Dest = Src (Overwrite, same as blending disabled)
+    return rt_blend_desc.LogicOp == D3D11_LOGIC_OP_NOOP || rt_blend_desc.LogicOp == D3D11_LOGIC_OP_COPY;
+}
+
+template <IsD3D11RenderTargetBlendDesc T>
+bool IsRTAlphaBlendDisabled(const T& rt_blend_desc)
 {
    if (!rt_blend_desc.BlendEnable) return true;
 
@@ -972,7 +1012,8 @@ bool IsRTAlphaBlendDisabled(const D3D11_RENDER_TARGET_BLEND_DESC& rt_blend_desc)
    return false;
 }
 
-bool IsRTRGBBlendDisabled(const D3D11_RENDER_TARGET_BLEND_DESC& rt_blend_desc)
+template <IsD3D11RenderTargetBlendDesc T>
+bool IsRTRGBBlendDisabled(const T& rt_blend_desc)
 {
    if (!rt_blend_desc.BlendEnable) return true;
 
@@ -994,15 +1035,23 @@ bool IsRTRGBBlendDisabled(const D3D11_RENDER_TARGET_BLEND_DESC& rt_blend_desc)
 }
 
 // Check if blending is disabled or equivalent
-bool IsRTBlendDisabled(const D3D11_RENDER_TARGET_BLEND_DESC& rt_blend_desc)
+template <IsD3D11RenderTargetBlendDesc T>
+bool IsRTBlendDisabled(const T& rt_blend_desc)
 {
+   // Logic Op only works on UINT/SINT textures so it's rare for our usage
+   if constexpr (std::is_same_v<T, D3D11_RENDER_TARGET_BLEND_DESC1>)
+   {
+      if (rt_blend_desc.LogicOpEnable)
+         return IsRTLogicOpDisabled(rt_blend_desc);
+   }
    return IsRTRGBBlendDisabled(rt_blend_desc) && IsRTAlphaBlendDisabled(rt_blend_desc);
 }
 
 // Helper to know if a blend inverts any source or dest color/alpha, or subtracts one from another,
 // all operations that work fine in UNORM (as they are limited to 0-1, even within the blend math) render targets but break with SIGNED FLOAT.
 // Alpha checks are separated as often it's manually kept to 0-1 so poses no risk.
-bool IsBlendInverted(const D3D11_BLEND_DESC& blend_desc, UINT render_targets = 1, bool check_alpha = false, UINT first_render_target = 0)
+template <IsD3D11BlendDesc T>
+bool IsBlendInverted(const T& blend_desc, UINT render_targets = 1, bool check_alpha = false, UINT first_render_target = 0)
 {
    auto IsBlendInverted_Internal = [](D3D11_BLEND blend, bool check_alpha)
    {
