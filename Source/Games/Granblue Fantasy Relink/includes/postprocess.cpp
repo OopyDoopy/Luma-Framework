@@ -56,7 +56,21 @@ static void CaptureOutlineReplayState(ID3D11DeviceContext* context, GameDeviceDa
    context->CSGetShader(replay_state.compute_shader.put(), nullptr, nullptr);
 
    ID3D11Buffer* cs_constant_buffers[GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount] = {};
-   context->CSGetConstantBuffers(0, GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount, &cs_constant_buffers[0]);
+   ComPtr<ID3D11DeviceContext1> ctx1;
+   context->QueryInterface(ctx1.put());
+   if (ctx1)
+   {
+      ctx1->CSGetConstantBuffers1(
+         0,
+         GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount,
+         &cs_constant_buffers[0],
+         replay_state.cs_constant_buffer_first_constants.data(),
+         replay_state.cs_constant_buffer_num_constants.data());
+   }
+   else
+   {
+      context->CSGetConstantBuffers(0, GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount, &cs_constant_buffers[0]);
+   }
    for (UINT i = 0; i < GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount; ++i)
    {
       replay_state.cs_constant_buffers[i] = cs_constant_buffers[i];
@@ -131,7 +145,21 @@ static bool DrawNativeOutlinePass(
    {
       cs_constant_buffers[i] = replay_state.cs_constant_buffers[i].get();
    }
-   context->CSSetConstantBuffers(0, GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount, &cs_constant_buffers[0]);
+   ComPtr<ID3D11DeviceContext1> ctx1;
+   context->QueryInterface(ctx1.put());
+   if (ctx1)
+   {
+      ctx1->CSSetConstantBuffers1(
+         0,
+         GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount,
+         &cs_constant_buffers[0],
+         replay_state.cs_constant_buffer_first_constants.data(),
+         replay_state.cs_constant_buffer_num_constants.data());
+   }
+   else
+   {
+      context->CSSetConstantBuffers(0, GameDeviceDataGBFR::OutlineReplayState::kCapturedConstantBufferCount, &cs_constant_buffers[0]);
+   }
 
    ID3D11SamplerState* cs_samplers[GameDeviceDataGBFR::OutlineReplayState::kCapturedSamplerCount] = {};
    for (UINT i = 0; i < GameDeviceDataGBFR::OutlineReplayState::kCapturedSamplerCount; ++i)
@@ -758,9 +786,9 @@ static void DrawNativeTonemapPass(
    ctx->Draw(4, 0);
 }
 
-static bool CanDrawNativeCutsceneGammaPass(const GameDeviceDataGBFR& game_device_data)
+static bool CanDrawNativeCutsceneGammaPass(ID3D11ShaderResourceView* input_srv, const GameDeviceDataGBFR& game_device_data)
 {
-   return game_device_data.cutscene_intermediate_srv.get() != nullptr &&
+   return input_srv != nullptr &&
           game_device_data.taa_output_texture.get() != nullptr &&
           game_device_data.cutscene_gamma_replay_state.valid;
 }
@@ -769,7 +797,8 @@ static void DrawNativeCutsceneGammaPass(
    ID3D11DeviceContext* ctx,
    CommandListData& cmd_list_data,
    DeviceData& device_data,
-   GameDeviceDataGBFR& game_device_data)
+   GameDeviceDataGBFR& game_device_data,
+   ID3D11ShaderResourceView* input_srv)
 {
    const auto vs_it = device_data.native_vertex_shaders.find(CompileTimeStringHash("Copy VS"));
    const auto ps_it = device_data.native_pixel_shaders.find(CompileTimeStringHash("GBFR Cutscene Gamma"));
@@ -780,7 +809,7 @@ static void DrawNativeCutsceneGammaPass(
       return;
    }
 
-   if (!CanDrawNativeCutsceneGammaPass(game_device_data))
+   if (!CanDrawNativeCutsceneGammaPass(input_srv, game_device_data))
    {
       ASSERT_ONCE_MSG(false, "DrawNativeCutsceneGammaPass: missing input/output resources");
       return;
@@ -806,7 +835,6 @@ static void DrawNativeCutsceneGammaPass(
 
    ctx->OMSetRenderTargets(0, nullptr, nullptr);
 
-   ID3D11ShaderResourceView* const input_srv = game_device_data.cutscene_intermediate_srv.get();
    ctx->PSSetShaderResources(0, 1, &input_srv);
 
    ID3D11SamplerState* const linear_sampler = device_data.sampler_state_linear.get();
@@ -829,9 +857,9 @@ static void DrawNativeCutsceneGammaPass(
    ctx->Draw(4, 0);
 }
 
-static bool CanDrawNativeCutsceneColorGradePass(const GameDeviceDataGBFR& game_device_data)
+static bool CanDrawNativeCutsceneColorGradePass(ID3D11ShaderResourceView* input_srv, const GameDeviceDataGBFR& game_device_data)
 {
-   return game_device_data.cutscene_gamma_srv.get() != nullptr &&
+   return input_srv != nullptr &&
           game_device_data.taa_output_texture.get() != nullptr &&
           game_device_data.cutscene_color_grade_replay_state.valid;
 }
@@ -840,7 +868,8 @@ static void DrawNativeCutsceneColorGradePass(
    ID3D11DeviceContext* ctx,
    CommandListData& cmd_list_data,
    DeviceData& device_data,
-   GameDeviceDataGBFR& game_device_data)
+   GameDeviceDataGBFR& game_device_data,
+   ID3D11ShaderResourceView* input_srv)
 {
    const auto vs_it = device_data.native_vertex_shaders.find(CompileTimeStringHash("Copy VS"));
    const auto ps_it = device_data.native_pixel_shaders.find(CompileTimeStringHash("GBFR Cutscene ColorGrade"));
@@ -851,7 +880,7 @@ static void DrawNativeCutsceneColorGradePass(
       return;
    }
 
-   if (!CanDrawNativeCutsceneColorGradePass(game_device_data))
+   if (!CanDrawNativeCutsceneColorGradePass(input_srv, game_device_data))
    {
       ASSERT_ONCE_MSG(false, "DrawNativeCutsceneColorGradePass: missing input/output resources");
       return;
@@ -877,7 +906,6 @@ static void DrawNativeCutsceneColorGradePass(
 
    ctx->OMSetRenderTargets(0, nullptr, nullptr);
 
-   ID3D11ShaderResourceView* const input_srv = game_device_data.cutscene_gamma_srv.get();
    ctx->PSSetShaderResources(0, 1, &input_srv);
 
    ID3D11SamplerState* const linear_sampler = device_data.sampler_state_linear.get();

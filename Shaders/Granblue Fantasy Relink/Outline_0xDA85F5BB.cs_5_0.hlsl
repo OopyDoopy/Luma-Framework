@@ -72,8 +72,6 @@ Texture2D<float4> DepthTexture : register(t2);
 Texture2D<uint4> g_StencilBuffer : register(t25);
 RWTexture2D<float4> OutputTexture : register(u0);
 
-SamplerState DepthSampler : register(s2); // DepthSampler
-
 #define cmp -
 
 [numthreads(16, 16, 1)]
@@ -82,22 +80,40 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
 
    float4 r0, r1, r2, r3, r4, r5;
 
-   r0.xyzw = (int4)vThreadID.xyxy;
-   r1.xy = cmp(r0.zw >= screenSize_.xy);
-   r1.x = asfloat(asint(r1.y) | asint(r1.x));
-   if (r1.x != 0)
+   int4 r0i = vThreadID.xyxy;
+// #if TONEMAP_AFTER_TAA
+//   r1.xy = cmp(r0.zw >= LumaSettings.SwapchainSize.xy);
+// #else
+//   r1.xy = cmp(r0.zw >= screenSize_.xy);
+// #endif
+//   r1.x = asfloat(asint(r1.y) | asint(r1.x));
+//   if (r1.x != 0) {
+//     return;
+//   }
+#if TONEMAP_AFTER_TAA
+   if (any(vThreadID.xy >= (uint2)LumaSettings.SwapchainSize.xy))
    {
       return;
    }
+#else
+   if (any(vThreadID.xy >= (uint2)screenSize_.xy))
+   {
+      return;
+   }
+#endif
+
    r1.xy = vThreadID.xy;
    r1.zw = float2(0, 0);
-   uint3 loadCoord = uint3(vThreadID.xy, 0);
+   int3 loadCoord = int3(vThreadID.xy, 0);
    r2.xyz = SrcTexture.Load(loadCoord).xyz;
+   OutputTexture[vThreadID.xy] = float4(r2.xyz, 1);
+   return;
 #if TONEMAP_AFTER_TAA
    if (LumaSettings.GameSettings.RenderScale != 1.0f)
    {
-      float2 scaledUV = (vThreadID.xy + 0.5) * LumaSettings.GameSettings.RenderScale * screenSize_.zw;
-      r3.x = DepthTexture.SampleLevel(DepthSampler, scaledUV, 0).x;
+      uint2 depthCoord = min((uint2)floor((vThreadID.xy + 0.5f) * LumaSettings.GameSettings.RenderScale),
+                             (uint2)(screenSize_.xy - 1.0f));
+      r3.x = DepthTexture.Load(int3(depthCoord, 0)).x;
    }
    else
    {
@@ -121,8 +137,18 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
    r3.y = cmp(r3.x < 0.99000001);
    if (r3.y != 0)
    {
-      r0.xyzw = screenSize_.zwzw * r0.xyzw;
-      r1.x = g_StencilBuffer.Load(r1.xyz).y;
+#if TONEMAP_AFTER_TAA
+      const float2 _outputSize = LumaSettings.SwapchainSize.xy;
+      const float2 _invOutputSize = LumaSettings.SwapchainInvSize.xy;
+      const uint2 _stencilCoord = min((uint2)floor((vThreadID.xy + 0.5f) * LumaSettings.GameSettings.RenderScale),
+                                      (uint2)(screenSize_.xy - 1.0f));
+#else
+      const float2 _outputSize = screenSize_.xy;
+      const float2 _invOutputSize = screenSize_.zw;
+      const uint2 _stencilCoord = vThreadID.xy;
+#endif
+      r0.xyzw = _invOutputSize.xyxy * r0.xyzw;
+      r1.x = g_StencilBuffer.Load(int3(_stencilCoord, 0)).y;
       r1.xy = (int2)r1.xx & int2(15, 128);
       r1.y = r1.y ? 9 : 0;
       r1.x = (int)r1.y + (int)r1.x;
@@ -152,8 +178,8 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
       r3.x = max(-0.5, pixelOffset_);
       r3.x = min(0, r3.x);
       r3.xyzw = float4(0, 1, 0, -1) + r3.xxxx;
-      r4.xyzw = r0.zwzw * screenSize_.xyxy + r3.yxwz;
-      r4.xy = min(screenSize_.xy, r4.xy);
+      r4.xyzw = r0.zwzw * _outputSize.xyxy + r3.yxwz;
+      r4.xy = min(_outputSize.xy, r4.xy);
       r5.xy = (int2)r4.xy;
       r5.zw = float2(0, 0);
       r5.xyz = SrcTexture.Load(r5.xyz).xyz;
@@ -161,8 +187,8 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
       r4.xy = (int2)r4.xy;
       r4.zw = float2(0, 0);
       r4.xyz = SrcTexture.Load(r4.xyz).xyz;
-      r0.xyzw = r0.xyzw * screenSize_.xyxy + r3.xyzw;
-      r0.xy = min(screenSize_.xy, r0.xy);
+      r0.xyzw = r0.xyzw * _outputSize.xyxy + r3.xyzw;
+      r0.xy = min(_outputSize.xy, r0.xy);
       r3.xy = (int2)r0.xy;
       r3.zw = float2(0, 0);
       r3.xyz = SrcTexture.Load(r3.xyz).xyz;
@@ -199,4 +225,5 @@ void main(uint2 vThreadID: SV_DispatchThreadID)
    }
    r2.w = 1;
    OutputTexture[vThreadID.xy] = float4(r2.xyz, r2.w);
+   return;
 }

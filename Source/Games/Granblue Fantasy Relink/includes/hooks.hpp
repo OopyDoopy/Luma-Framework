@@ -8,20 +8,30 @@ struct GBFRHookGlobals
    SafetyHookInline update_screen_resolution_hook;
    SafetyHookInline vs_set_constant_buffers1_hook_immediate;
    SafetyHookInline vs_set_constant_buffers1_hook_deferred;
+   SafetyHookInline dispatch_viewport_hook;
    safetyhook::MidHook jitter_write_hook;
+   safetyhook::MidHook ui_orchestrator_hook;
 
    std::atomic<DeviceData*> device_data_ptr = nullptr;
    std::atomic<ID3D11Device*> native_device_ptr = nullptr;
    std::atomic<uint32_t> table_jitter_x_bits{0};
    std::atomic<uint32_t> table_jitter_y_bits{0};
    std::atomic<bool> table_jitter_valid{false};
+   // UI render orchestrator (sub_143222A10) first arg — the UI state object pointer.
+   // Updated every frame via mid-hook; used by Hooked_DispatchRenderPassViewport to
+   // identify which GBFR_DispatchRenderPassViewport calls originate from the UI pipeline.
+   std::atomic<uintptr_t> ui_render_ctx{0};
 };
 
 constexpr size_t kVSSetConstantBuffers1_VTableIndex = 119;
 constexpr uintptr_t kInitializeDX11RenderingPipeline_RVA = 0x00745510;
 constexpr uintptr_t kUpdateScreenResolution_RVA = 0x005F7960;
-constexpr uintptr_t kRenderWidth_RVA = 0x05AA41E8;
-constexpr uintptr_t kRenderHeight_RVA = 0x05AA41EC;
+constexpr uintptr_t kDispatchRenderPassViewport_RVA = 0x01BFF340; // GBFR_DispatchRenderPassViewport
+constexpr uintptr_t kUIRenderOrchestrator_RVA = 0x03222A10;       // sub_143222A10 — UI pipeline entry
+constexpr uintptr_t kOutputWidth_RVA = 0x05AA41E8;                // g_outputWidth  — read by the single caller of InitializeDX11RenderingPipeline (args = these globals)
+constexpr uintptr_t kOutputHeight_RVA = 0x05AA41EC;               // g_outputHeight — same
+constexpr uintptr_t kRenderWidth_RVA = 0x05AA41E0;                // g_renderWidth  — frame graph reads this to decide temporal upscale path; must equal the args passed to InitializeDX11RenderingPipeline
+constexpr uintptr_t kRenderHeight_RVA = 0x05AA41E4;               // g_renderHeight — same
 constexpr uintptr_t kCameraGlobal_RVA = 0x068B4F90;
 constexpr uintptr_t kCameraProjectionDataOffset = 0x60;
 constexpr uintptr_t kProjectionJitterXOffset = 0x940;
@@ -41,19 +51,22 @@ inline auto& g_rt_creation_hook = g_hook_globals.rt_creation_hook;
 inline auto& g_update_screen_resolution_hook = g_hook_globals.update_screen_resolution_hook;
 inline auto& g_VSSetConstantBuffers1_hook_immediate = g_hook_globals.vs_set_constant_buffers1_hook_immediate;
 inline auto& g_VSSetConstantBuffers1_hook_deferred = g_hook_globals.vs_set_constant_buffers1_hook_deferred;
+inline auto& g_dispatch_viewport_hook = g_hook_globals.dispatch_viewport_hook;
 inline auto& g_jitter_write_hook = g_hook_globals.jitter_write_hook;
+inline auto& g_ui_orchestrator_hook = g_hook_globals.ui_orchestrator_hook;
 inline auto& g_device_data_ptr = g_hook_globals.device_data_ptr;
 inline auto& g_native_device_ptr = g_hook_globals.native_device_ptr;
 
 bool TryReadCameraJitter(float2& out_jitter);
 void OnJitterWrite(safetyhook::Context& ctx);
+void OnUIRenderOrchestratorEntry(safetyhook::Context& ctx);
 bool TryReadTableJitter(float2& out_jitter);
 void PatchJitterPhases();
 bool IsTAARunningThisFrame();
-float GetEffectiveRenderScale(bool taa_running);
 void* GetVTableFunction(void* obj, size_t index);
 
 char __fastcall Hooked_InitializeDX11RenderingPipeline(int screen_width, int screen_height);
+__int64 __fastcall Hooked_DispatchRenderPassViewport(__int64 render_ctx, __int64 pass_desc_ptr);
 __int64 __fastcall Hooked_UpdateScreenResolution(__int64 a1);
 void STDMETHODCALLTYPE Hooked_VSSetConstantBuffers1_Immediate(
    ID3D11DeviceContext1* pContext,

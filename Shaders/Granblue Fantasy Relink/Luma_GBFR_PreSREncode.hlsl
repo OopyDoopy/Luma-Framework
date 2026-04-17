@@ -8,5 +8,5 @@ void main(float4 v0: SV_Position0, out float4 o0: SV_Target0)
    float4 color = g_Texture0.Load(uv);
    color.rgb = gamma_sRGB_to_linear(color.rgb, GCT_MIRROR);
    color.rgb = BT709_To_BT2020(color.rgb);
-   o0 = color;
+   o0 = float4(color.rgb, 1.f);
 }

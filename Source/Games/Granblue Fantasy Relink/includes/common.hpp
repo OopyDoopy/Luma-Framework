@@ -2,6 +2,7 @@
 
 #include "upscale.hpp"
 #include "postprocess.hpp"
+#include "ui_scale.hpp"
 
 struct GameDeviceDataGBFR final : public GameDeviceData, public GBFRUpscaleState, public GBFRPostProcessState
 {
@@ -19,7 +20,13 @@ struct GameDeviceDataGBFR final : public GameDeviceData, public GBFRUpscaleState
    float2 prev_jitter = {0, 0};
    float2 table_jitter = {0, 0};
    float2 prev_table_jitter = {0, 0};
+   std::atomic<bool> taa_running_cached = false;
+   UIScaleState ui_scale;
    std::atomic<ID3D11DeviceContext*> tonemap_detected_context = nullptr;
+   // The first device context observed to be drawing UI (identified by blend state) — cached for the remainder of the frame.
+   std::atomic<ID3D11DeviceContext*> ui_detected_context = nullptr;
+   // Command list created from the cached UI deferred context during FinishCommandList.
+   std::atomic<ID3D11CommandList*> ui_finish_command_list = nullptr;
 
 #if TEST || DEVELOPMENT
    bool taa_detected_this_frame = false;
@@ -75,6 +82,7 @@ struct GBFRShaderHashes
    ShaderHashesList<false> cutscene_color_grade;
    ShaderHashesList<false> cutscene_overlay_blend;
    ShaderHashesList<false> cutscene_overlay_modulate;
+   ShaderHashesList<false> output;
 };
 
 struct GBFRRuntimeSettings
@@ -97,6 +105,7 @@ extern ShaderHashesList<false>& shader_hashes_CutsceneGamma;
 extern ShaderHashesList<false>& shader_hashes_CutsceneColorGrade;
 extern ShaderHashesList<false>& shader_hashes_CutsceneOverlayBlend;
 extern ShaderHashesList<false>& shader_hashes_CutsceneOverlayModulate;
+extern ShaderHashesList<false>& shader_hashes_Output;
 
 extern float& render_scale;
 extern bool& render_scale_changed;

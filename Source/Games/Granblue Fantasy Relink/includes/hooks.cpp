@@ -63,22 +63,29 @@ void PatchJitterPhases()
 
 bool IsTAARunningThisFrame()
 {
+   // During pause/unpause transitions the settings object can be rebuilt temporarily.
+   // Keep and return the last known-good value when reads are transiently unavailable.
+   static std::atomic<bool> s_last_taa_running{false};
+
+   const bool last_known = s_last_taa_running.load(std::memory_order_acquire);
    const uintptr_t mod_base = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
    if (mod_base == 0)
-      return false;
-   const uintptr_t settings_obj = *reinterpret_cast<const uintptr_t*>(mod_base + kTAASettingsGlobal_RVA);
-   if (settings_obj == 0)
-      return false;
-   return (*reinterpret_cast<const uint8_t*>(settings_obj + 22) & 1) != 0;
-}
+      return last_known;
 
-float GetEffectiveRenderScale(bool taa_running)
-{
-   if (!taa_running && render_scale < 1.0f)
+   __try
    {
-      return 1.0f;
+      const uintptr_t settings_obj = *reinterpret_cast<const uintptr_t*>(mod_base + kTAASettingsGlobal_RVA);
+      if (settings_obj == 0)
+         return last_known;
+
+      const bool taa_running = (*reinterpret_cast<const uint8_t*>(settings_obj + 22) & 1) != 0;
+      s_last_taa_running.store(taa_running, std::memory_order_release);
+      return taa_running;
    }
-   return render_scale;
+   __except (EXCEPTION_EXECUTE_HANDLER)
+   {
+      return last_known;
+   }
 }
 
 void* GetVTableFunction(void* obj, size_t index)
@@ -87,91 +94,100 @@ void* GetVTableFunction(void* obj, size_t index)
    return vtable[index];
 }
 
-char __fastcall Hooked_InitializeDX11RenderingPipeline(int screen_width, int screen_height)
+// GBFR_InitializeDX11RenderingPipeline is called every frame from a single caller.
+// It has a dimension cache (g_rtDimensionCache) that gates RT recreation — cache is
+// written with the incoming args before RT creation, so substituting args here means
+// the render dims are cached automatically and RT recreation only fires on dim change.
+//
+// screen_width/screen_height are read by the caller from g_outputWidth/g_outputHeight,
+// so they always carry the current output resolution. We substitute render-scaled dims
+// into the trampoline call and write them to g_renderWidth/g_renderHeight — the globals
+// the frame graph reads to decide whether the temporal upscale path runs.
+// g_outputWidth/g_outputHeight are never modified.
+static char __fastcall Hooked_InitializeDX11RenderingPipeline(int screen_width, int screen_height)
 {
-   bool taa_running = IsTAARunningThisFrame();
-   int init_width = screen_width;
-   int init_height = screen_height;
+   int render_w = screen_width;
+   int render_h = screen_height;
 
    DeviceData* device_data = g_device_data_ptr.load(std::memory_order_acquire);
-   if (device_data && device_data->game && screen_width > 0 && screen_height > 0)
+   if (device_data && screen_width > 0 && screen_height > 0)
    {
-      auto& game_device_data = *static_cast<GameDeviceDataGBFR*>(device_data->game);
+      // screen_width/height ARE the output dims — keep output_resolution current every frame.
+      device_data->output_resolution.x = static_cast<float>(screen_width);
+      device_data->output_resolution.y = static_cast<float>(screen_height);
 
-      float scale = GetEffectiveRenderScale(taa_running);
-      cb_luma_global_settings.GameSettings.RenderScale = scale;
-      device_data->cb_luma_global_settings_dirty = true;
+      const float scale = render_scale;
+      const double aspect_ratio = static_cast<double>(screen_width) / screen_height;
+      auto render_dims = Math::FindClosestIntegerResolutionForAspectRatio(
+         screen_width * static_cast<double>(scale),
+         screen_height * static_cast<double>(scale),
+         aspect_ratio);
+      device_data->render_resolution.x = static_cast<float>(render_dims[0]);
+      device_data->render_resolution.y = static_cast<float>(render_dims[1]);
 
-      {
-         const float output_w = device_data->output_resolution.x > 0.f ? device_data->output_resolution.x : static_cast<float>(screen_width);
-         const float output_h = device_data->output_resolution.y > 0.f ? device_data->output_resolution.y : static_cast<float>(screen_height);
-         const double aspect_ratio = static_cast<double>(output_w) / output_h;
-         auto render_dims = Math::FindClosestIntegerResolutionForAspectRatio(
-            output_w * static_cast<double>(scale),
-            output_h * static_cast<double>(scale),
-            aspect_ratio);
-         device_data->render_resolution.x = static_cast<float>(render_dims[0]);
-         device_data->render_resolution.y = static_cast<float>(render_dims[1]);
-         init_width = static_cast<int>((std::max)(1u, render_dims[0]));
-         init_height = static_cast<int>((std::max)(1u, render_dims[1]));
+      render_w = static_cast<int>((std::max)(1u, render_dims[0]));
+      render_h = static_cast<int>((std::max)(1u, render_dims[1]));
 
-         const uintptr_t mod_base_rt = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
-         *reinterpret_cast<uint32_t*>(mod_base_rt + kRenderWidth_RVA) = static_cast<uint32_t>(init_width);
-         *reinterpret_cast<uint32_t*>(mod_base_rt + kRenderHeight_RVA) = static_cast<uint32_t>(init_height);
-      }
+      // Keep g_renderWidth/g_renderHeight in sync with the args we pass to the trampoline.
+      // CreateRenderTargets initialises these from g_outputWidth/g_outputHeight (always output
+      // dims) and never applies a scale, so without this write the frame graph sees
+      // render == output and skips the temporal upscale path every frame.
+      const uintptr_t mod_base = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
+      *reinterpret_cast<int*>(mod_base + kRenderWidth_RVA) = render_w;
+      *reinterpret_cast<int*>(mod_base + kRenderHeight_RVA) = render_h;
    }
 
-   char result = g_rt_creation_hook.unsafe_call<char>(init_width, init_height);
-
-   if (device_data && device_data->game)
-   {
-      auto& game_device_data_rt = *static_cast<GameDeviceDataGBFR*>(device_data->game);
-      if (device_data->render_resolution.x > 0 && device_data->render_resolution.x < device_data->output_resolution.x)
-      {
-         const uintptr_t mod_base_rt2 = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
-         *reinterpret_cast<uint32_t*>(mod_base_rt2 + kRenderWidth_RVA) = static_cast<uint32_t>(device_data->render_resolution.x);
-         *reinterpret_cast<uint32_t*>(mod_base_rt2 + kRenderHeight_RVA) = static_cast<uint32_t>(device_data->render_resolution.y);
-      }
-   }
-
-   return result;
+   // Pass render dims to the game — g_outputWidth/g_outputHeight are not touched.
+   return g_rt_creation_hook.unsafe_call<char>(render_w, render_h);
 }
 
+// Not hooked. Hooked_InitializeDX11RenderingPipeline runs every frame and receives
+// screen_width/screen_height directly from g_outputWidth/g_outputHeight, so it always
+// has the current output dims without needing to intercept the resolution-change path.
 __int64 __fastcall Hooked_UpdateScreenResolution(__int64 a1)
 {
-   __int64 result = g_update_screen_resolution_hook.unsafe_call<__int64>(a1);
+   return g_update_screen_resolution_hook.unsafe_call<__int64>(a1);
+}
 
-   DeviceData* device_data = g_device_data_ptr.load(std::memory_order_acquire);
-   if (device_data && device_data->game)
+// Called every frame by the UI render orchestrator (sub_143222A10).
+// Records a1 (the UI state object pointer) so Hooked_DispatchRenderPassViewport can
+// identify which GBFR_DispatchRenderPassViewport calls originate from the UI pipeline.
+void OnUIRenderOrchestratorEntry(safetyhook::Context& ctx)
+{
+   g_hook_globals.ui_render_ctx.store(ctx.rcx, std::memory_order_relaxed);
+}
+
+// GBFR_DispatchRenderPassViewport is the single chokepoint for all RSSetViewports calls.
+// When DLSS render-scale is active, all render targets are sized at render dims (e.g.
+// 2880x1620 at 75%), including UI composition targets that should be at full output dims
+// (3840x2160) so the UI fills the screen.
+//
+// Detection: the UI render orchestrator (sub_143222A10) always passes the same state object
+// pointer as rcx through to GBFR_DispatchRenderPassViewport. We track that pointer via
+// OnUIRenderOrchestratorEntry and override passDesc width/height to output dims when:
+//   - rcx == the recorded UI state object (this call originates from the UI pipeline), AND
+//   - the current dims match render dims (the RT was created at render scale, not output).
+//
+// Blur/convolution intermediates at other dimensions (e.g. 1920x1080) pass through unchanged.
+__int64 __fastcall Hooked_DispatchRenderPassViewport(__int64 render_ctx, __int64 pass_desc_ptr)
+{
+   const uintptr_t ui_ctx = g_hook_globals.ui_render_ctx.load(std::memory_order_relaxed);
+   if (ui_ctx != 0 && render_ctx == static_cast<__int64>(ui_ctx))
    {
-      auto& game_device_data = *static_cast<GameDeviceDataGBFR*>(device_data->game);
-
-      const uintptr_t mod_base = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
-      const uint32_t native_w = *reinterpret_cast<const uint32_t*>(mod_base + kRenderWidth_RVA);
-      const uint32_t native_h = *reinterpret_cast<const uint32_t*>(mod_base + kRenderHeight_RVA);
-
-      if (native_w > 0 && native_h > 0)
+      DeviceData* device_data = g_device_data_ptr.load(std::memory_order_acquire);
+      if (device_data)
       {
-         device_data->output_resolution.x = static_cast<float>(native_w);
-         device_data->output_resolution.y = static_cast<float>(native_h);
-
-         float scale = GetEffectiveRenderScale(IsTAARunningThisFrame());
+         int* dims = reinterpret_cast<int*>(pass_desc_ptr + 0x50);
+         const int render_w = static_cast<int>(device_data->render_resolution.x);
+         const int render_h = static_cast<int>(device_data->render_resolution.y);
+         if (dims[0] == render_w && dims[1] == render_h)
          {
-            const double aspect_ratio = static_cast<double>(device_data->output_resolution.x) / device_data->output_resolution.y;
-            auto render_dims = Math::FindClosestIntegerResolutionForAspectRatio(
-               device_data->output_resolution.x * static_cast<double>(scale),
-               device_data->output_resolution.y * static_cast<double>(scale),
-               aspect_ratio);
-            device_data->render_resolution.x = static_cast<float>((std::max)(1u, render_dims[0]));
-            device_data->render_resolution.y = static_cast<float>((std::max)(1u, render_dims[1]));
+            dims[0] = static_cast<int>(device_data->output_resolution.x);
+            dims[1] = static_cast<int>(device_data->output_resolution.y);
          }
-
-         *reinterpret_cast<uint32_t*>(mod_base + kRenderWidth_RVA) = static_cast<uint32_t>(device_data->render_resolution.x);
-         *reinterpret_cast<uint32_t*>(mod_base + kRenderHeight_RVA) = static_cast<uint32_t>(device_data->render_resolution.y);
       }
    }
-
-   return result;
+   return g_dispatch_viewport_hook.unsafe_call<__int64>(render_ctx, pass_desc_ptr);
 }
 
 void PatchSceneBufferInHook(

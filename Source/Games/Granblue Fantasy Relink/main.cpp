@@ -1,5 +1,3 @@
-#include <cstdint>
-#include <d3d11_1.h>
 #define GAME_GRANBLUE_FANTASY_RELINK 1
 
 #define ENABLE_NGX 1
@@ -21,6 +19,7 @@ namespace
 {
 #include "includes\upscale.cpp"
 #include "includes\postprocess.cpp"
+#include "includes\ui_scale.cpp"
 
 } // namespace
 
@@ -45,10 +44,10 @@ public:
       const float resY = device_data.render_resolution.y;
       if (resX > 0.f && resY > 0.f)
       {
-         data.GameData.JitterOffset.x = game_device_data.jitter.x * 2.0f / resX;
-         data.GameData.JitterOffset.y = game_device_data.jitter.y * -2.0f / resY;
-         data.GameData.PrevJitterOffset.x = game_device_data.prev_jitter.x * 2.0f / resX;
-         data.GameData.PrevJitterOffset.y = game_device_data.prev_jitter.y * -2.0f / resY;
+         data.GameData.JitterOffset.x = game_device_data.table_jitter.x * 2.0f / resX;
+         data.GameData.JitterOffset.y = game_device_data.table_jitter.y * -2.0f / resY;
+         data.GameData.PrevJitterOffset.x = game_device_data.prev_table_jitter.x * 2.0f / resX;
+         data.GameData.PrevJitterOffset.y = game_device_data.prev_table_jitter.y * -2.0f / resY;
       }
       data.GameData.IsTAARunning = IsTAARunningThisFrame() ? 1 : 0;
    }
@@ -96,6 +95,14 @@ public:
       native_shaders_definitions.emplace(
          CompileTimeStringHash("GBFR Pre SR Encode"),
          ShaderDefinition{"Luma_GBFR_PreSREncode", reshade::api::pipeline_subobject_type::pixel_shader});
+
+      native_shaders_definitions.emplace(
+         CompileTimeStringHash("GBFR Fullscreen UV VS"),
+         ShaderDefinition{"Luma_GBFR_FullscreenUV_VS", reshade::api::pipeline_subobject_type::vertex_shader});
+
+      native_shaders_definitions.emplace(
+         CompileTimeStringHash("GBFR UI Background Copy"),
+         ShaderDefinition{"Luma_GBFR_UIBackgroundCopy", reshade::api::pipeline_subobject_type::pixel_shader});
    }
 
    void OnLoad(std::filesystem::path& file_path, bool failed) override
@@ -119,6 +126,7 @@ public:
       std::function<void()>* original_draw_dispatch_func) override
    {
       auto& game_device_data = GetGameDeviceData(device_data);
+
       bool is_taa_running = IsTAARunningThisFrame();
       if (is_taa_running && cb_luma_global_settings.GameSettings.IsTAARunning == 0)
       {
@@ -268,7 +276,7 @@ public:
          DrawOrDispatchOverrideType override_type = DrawOrDispatchOverrideType::None;
          if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed)
          {
-            override_type = [](GameDeviceDataGBFR& game_device_data, ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, DeviceData& device_data) -> DrawOrDispatchOverrideType
+            override_type = [](GameDeviceDataGBFR& game_device_data, ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, DeviceData& device_data, CommandListData& cmd_list_data) -> DrawOrDispatchOverrideType
             {
 #if PATCH_SCENE_BUFFER
                if (!game_device_data.scene_buffer_info_collected.load(std::memory_order_acquire))
@@ -316,7 +324,7 @@ public:
 
                   if (cb_luma_global_settings.DisplayMode == DisplayModeType::HDR)
                   {
-                     const bool pre_sr_ok = DrawNativePreSREncodePass(native_device, native_device_context, device_data, game_device_data);
+                     const bool pre_sr_ok = DrawNativePreSREncodePass(native_device, native_device_context, cmd_list_data, device_data, game_device_data);
 #if TEST || DEVELOPMENT
                      if (!pre_sr_ok)
                      {
@@ -349,7 +357,7 @@ public:
                   game_device_data.draw_device_context = native_device_context;
                }
                return DrawOrDispatchOverrideType::Replaced;
-            }(game_device_data, native_device, native_device_context, device_data);
+            }(game_device_data, native_device, native_device_context, device_data, cmd_list_data);
          }
          else if (render_scale == 1.f)
          {
@@ -466,6 +474,17 @@ public:
          }
          return override_type;
       }
+
+      // UI phase detection and redirect to output-resolution texture.
+      if (DetectUIPhase(device_data, native_device_context))
+      {
+         RedirectUIDrawToScaledTarget(native_device_context, device_data, game_device_data);
+      }
+
+      if (original_shader_hashes.Contains(shader_hashes_Output))
+      {
+         HandleOutputShaderForUIScale(native_device_context, native_device, device_data, game_device_data);
+      }
       return DrawOrDispatchOverrideType::None;
    }
 
@@ -475,8 +494,29 @@ public:
       ID3D11DeviceChild* device_child = (ID3D11DeviceChild*)(cmd_list->get_native());
       HRESULT hr = device_child->QueryInterface(native_device_context.put());
 
+      ComPtr<ID3D11CommandList> native_cmd_list;
+      device_child->QueryInterface(native_cmd_list.put());
+
       auto& device_data = *cmd_list->get_device()->get_private_data<DeviceData>();
       auto& game_device_data = GetGameDeviceData(device_data);
+
+      ComPtr<ID3D11DeviceContext> source_deferred_ctx;
+      ComPtr<ID3D11CommandList> secondary_native_cmd_list;
+      {
+         ID3D11DeviceChild* secondary_child = (ID3D11DeviceChild*)(secondary_cmd_list->get_native());
+         secondary_child->QueryInterface(source_deferred_ctx.put());
+         secondary_child->QueryInterface(secondary_native_cmd_list.put());
+      }
+
+      const bool is_finish_command_list = source_deferred_ctx != nullptr;
+      if (is_finish_command_list)
+      {
+         const ID3D11DeviceContext* ui_ctx = game_device_data.ui_detected_context.load(std::memory_order_acquire);
+         if (native_cmd_list && ui_ctx != nullptr && source_deferred_ctx.get() == ui_ctx)
+         {
+            game_device_data.ui_finish_command_list.store(native_cmd_list.get(), std::memory_order_release);
+         }
+      }
 
       if (native_device_context)
       {
@@ -484,10 +524,7 @@ public:
          // on the immediate context. Patch the ring buffer before the first one runs
          // (Map/Unmap already happened on the immediate context at start of frame).
          ComPtr<ID3D11CommandList> native_command_list;
-         {
-            ID3D11DeviceChild* secondary_child = (ID3D11DeviceChild*)(secondary_cmd_list->get_native());
-            secondary_child->QueryInterface(native_command_list.put());
-         }
+         native_command_list = secondary_native_cmd_list;
          if (native_command_list)
          {
 #if PATCH_SCENE_BUFFER
@@ -518,6 +555,13 @@ public:
             }
 #endif
          }
+
+         if (native_command_list &&
+             native_command_list.get() == game_device_data.ui_finish_command_list.load(std::memory_order_acquire))
+         {
+            device_data.has_drawn_main_post_processing = true;
+         }
+
          if (native_command_list.get() == game_device_data.remainder_command_list.load(std::memory_order_acquire) && game_device_data.partial_command_list.get() != nullptr)
          {
             {
@@ -547,10 +591,12 @@ public:
                // DrawNativePreSREncodePass was intentionally deferred from recording time to here.
                if (render_scale != 1.f && device_data.sr_type != SR::Type::None && !device_data.sr_suppressed && cb_luma_global_settings.DisplayMode == DisplayModeType::HDR)
                {
-                  ID3D11Device* native_device_tup = g_native_device_ptr.load(std::memory_order_acquire);
-                  if (native_device_tup)
+
                   {
-                     const bool pre_sr_ok = DrawNativePreSREncodePass(native_device_tup, native_device_context.get(), device_data, game_device_data);
+                     ComPtr<ID3D11Device> native_device;
+                     native_device_context->GetDevice(native_device.put());
+
+                     const bool pre_sr_ok = DrawNativePreSREncodePass(native_device.get(), native_device_context.get(), cmd_list_data, device_data, game_device_data);
 #if TEST || DEVELOPMENT
                      if (!pre_sr_ok)
                      {
@@ -695,6 +741,8 @@ public:
                         }
                      }
 #endif
+                     draw_state_stack.Restore(native_device_context.get());
+                     compute_state_stack.Restore(native_device_context.get());
                   }
                }
 
@@ -739,7 +787,7 @@ public:
                      if (pipeline_color_srv)
                      {
                         const bool post_sr_ok = run_chained_color_pass("PostSREncode", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
+                           {
                            // Use pre-DLSS input for alpha extraction if SR was executed.
                            ID3D11ShaderResourceView* alpha_source_srv = nullptr;
                            if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed && device_data.has_drawn_sr)
@@ -753,8 +801,7 @@ public:
                            }
 
                            out_srv = game_device_data.post_sr_encode_srv.get();
-                           return true;
-                        });
+                           return true; });
 #if TEST || DEVELOPMENT
                         if (!post_sr_ok)
                         {
@@ -791,7 +838,7 @@ public:
                   if (after_sr && CanDrawNativeMotionBlurPass(pipeline_color_srv, game_device_data))
                   {
                      const bool motion_blur_ok = run_chained_color_pass("MotionBlur", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
+                        {
                         DrawNativeMotionBlurPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
                         if (!game_device_data.motion_blur_output_ready)
                         {
@@ -799,8 +846,7 @@ public:
                         }
 
                         out_srv = game_device_data.motion_blur_output_srv.get();
-                        return true;
-                     });
+                        return true; });
 #if TEST || DEVELOPMENT
                      if (!motion_blur_ok)
                      {
@@ -855,11 +901,10 @@ public:
                   if (ready)
                   {
                      const bool tonemap_ok = run_chained_color_pass("Tonemap", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
+                        {
                         DrawNativeTonemapPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
                         out_srv = game_device_data.cutscene_intermediate_srv.get();
-                        return true;
-                     });
+                        return true; });
                      game_device_data.tonemap_draw_pending.store(false, std::memory_order_release);
                      game_device_data.exposure_texture = nullptr;
                      game_device_data.exposure_texture_srv = nullptr;
@@ -898,21 +943,20 @@ public:
 
                if (game_device_data.cutscene_gamma_pending.load(std::memory_order_acquire))
                {
-                  if (CanDrawNativeCutsceneGammaPass(game_device_data))
+                  if (CanDrawNativeCutsceneGammaPass(pipeline_color_srv, game_device_data))
                   {
-                     run_chained_color_pass("CutsceneGamma", [&](ID3D11ShaderResourceView* /*input_srv*/, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
-                        DrawNativeCutsceneGammaPass(native_device_context.get(), cmd_list_data, device_data, game_device_data);
+                     run_chained_color_pass("CutsceneGamma", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
+                        {
+                        DrawNativeCutsceneGammaPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
                         out_srv = game_device_data.cutscene_gamma_srv.get();
-                        return true;
-                     });
+                        return true; });
                   }
 #if TEST || DEVELOPMENT
                   else
                   {
                      std::string reason = "prerequisite missing:";
-                     if (!game_device_data.cutscene_intermediate_srv.get())
-                        reason += " cutscene_intermediate_srv=null;";
+                     if (!pipeline_color_srv)
+                        reason += " pipeline_color_srv=null;";
                      if (!game_device_data.taa_output_texture.get())
                         reason += " taa_output_texture=null;";
                      if (!game_device_data.cutscene_gamma_replay_state.valid)
@@ -926,21 +970,20 @@ public:
 
                if (game_device_data.cutscene_color_grade_pending.load(std::memory_order_acquire))
                {
-                  if (CanDrawNativeCutsceneColorGradePass(game_device_data))
+                  if (CanDrawNativeCutsceneColorGradePass(pipeline_color_srv, game_device_data))
                   {
-                     run_chained_color_pass("CutsceneColorGrade", [&](ID3D11ShaderResourceView* /*input_srv*/, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
-                        DrawNativeCutsceneColorGradePass(native_device_context.get(), cmd_list_data, device_data, game_device_data);
+                     run_chained_color_pass("CutsceneColorGrade", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
+                        {
+                        DrawNativeCutsceneColorGradePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
                         out_srv = game_device_data.cutscene_color_grade_srv.get();
-                        return true;
-                     });
+                        return true; });
                   }
 #if TEST || DEVELOPMENT
                   else
                   {
                      std::string reason = "prerequisite missing:";
-                     if (!game_device_data.cutscene_gamma_srv.get())
-                        reason += " cutscene_gamma_srv=null;";
+                     if (!pipeline_color_srv)
+                        reason += " pipeline_color_srv=null;";
                      if (!game_device_data.taa_output_texture.get())
                         reason += " taa_output_texture=null;";
                      if (!game_device_data.cutscene_color_grade_replay_state.valid)
@@ -957,11 +1000,10 @@ public:
                   if (CanDrawNativeCutsceneOverlayModulatePass(pipeline_color_srv, game_device_data))
                   {
                      const bool overlay_modulate_ok = run_chained_color_pass("CutsceneOverlayModulate", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
+                        {
                         DrawNativeCutsceneOverlayModulatePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
                         out_srv = game_device_data.cutscene_overlay_modulate_srv.get();
-                        return true;
-                     });
+                        return true; });
 #if TEST || DEVELOPMENT
                      if (!overlay_modulate_ok)
                      {
@@ -991,11 +1033,10 @@ public:
                   if (CanDrawNativeCutsceneOverlayBlendPass(pipeline_color_srv, game_device_data))
                   {
                      run_chained_color_pass("CutsceneOverlayBlend", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
+                        {
                         DrawNativeCutsceneOverlayBlendPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv, game_device_data.cutscene_intermediate_rtv.get());
                         out_srv = game_device_data.cutscene_intermediate_srv.get();
-                        return true;
-                     });
+                        return true; });
                      game_device_data.cutscene_overlay_blend_pending.store(false, std::memory_order_release);
                   }
 #if TEST || DEVELOPMENT
@@ -1022,15 +1063,14 @@ public:
                   if (CanDrawNativeOutlinePass(pipeline_color_srv, game_device_data))
                   {
                      const bool outline_ok = run_chained_color_pass("OutlineCS", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                     {
+                        {
                         if (!DrawNativeOutlinePass(native_device_context.get(), device_data, game_device_data, input_srv))
                         {
                            return false;
                         }
 
                         out_srv = game_device_data.outline_srv.get();
-                        return true;
-                     });
+                        return true; });
 #if TEST || DEVELOPMENT
                      if (!outline_ok)
                      {
@@ -1146,6 +1186,13 @@ public:
 #endif
    }
 
+   void OnInitSwapchain(reshade::api::swapchain* swapchain) override
+   {
+      auto& device_data = *swapchain->get_device()->get_private_data<DeviceData>();
+      auto& game_device_data = GetGameDeviceData(device_data);
+      EnsureScaledTexture(device_data, game_device_data);
+   }
+
    void OnCreateDevice(ID3D11Device* native_device, DeviceData& device_data) override
    {
       device_data.game = new GameDeviceDataGBFR;
@@ -1171,15 +1218,25 @@ public:
          }
       }
 
-      if (!g_update_screen_resolution_hook)
+      if (!g_dispatch_viewport_hook)
       {
          const uintptr_t base_addr = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
          if (base_addr != 0)
          {
-            void* update_res_fn = reinterpret_cast<void*>(base_addr + kUpdateScreenResolution_RVA);
-            g_update_screen_resolution_hook = safetyhook::create_inline(
-               update_res_fn,
-               reinterpret_cast<void*>(&Hooked_UpdateScreenResolution));
+            g_dispatch_viewport_hook = safetyhook::create_inline(
+               reinterpret_cast<void*>(base_addr + kDispatchRenderPassViewport_RVA),
+               reinterpret_cast<void*>(&Hooked_DispatchRenderPassViewport));
+         }
+      }
+
+      if (!g_ui_orchestrator_hook)
+      {
+         const uintptr_t base_addr = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
+         if (base_addr != 0)
+         {
+            g_ui_orchestrator_hook = safetyhook::create_mid(
+               reinterpret_cast<void*>(base_addr + kUIRenderOrchestrator_RVA),
+               &OnUIRenderOrchestratorEntry);
          }
       }
 
@@ -1294,9 +1351,14 @@ public:
       }
       device_data.has_drawn_sr = false;
       game_device_data.tonemap_detected_context.store(nullptr, std::memory_order_relaxed);
+      game_device_data.ui_detected_context.store(nullptr, std::memory_order_relaxed);
+      game_device_data.ui_finish_command_list.store(nullptr, std::memory_order_relaxed);
+      game_device_data.ui_scale.ResetPerFrame();
+      device_data.ui_initial_original_rtv = nullptr;
 #if TEST || DEVELOPMENT
       game_device_data.taa_detected_this_frame = false;
 #endif
+      device_data.has_drawn_main_post_processing = false;
       game_device_data.remainder_command_list.store(nullptr, std::memory_order_relaxed);
       game_device_data.draw_device_context = nullptr;
       game_device_data.sr_source_color = nullptr;
@@ -1946,6 +2008,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       shader_hashes_CutsceneOverlayBlend.vertex_shaders.emplace(std::stoul("DAFDA220", nullptr, 16));
       shader_hashes_CutsceneOverlayModulate.pixel_shaders.emplace(std::stoul("B9AFD904", nullptr, 16));
       shader_hashes_CutsceneOverlayModulate.vertex_shaders.emplace(std::stoul("4741FB87", nullptr, 16));
+      shader_hashes_Output.pixel_shaders.emplace(std::stoul("F55707D4", nullptr, 16));
 
       swapchain_format_upgrade_type = TextureFormatUpgradesType::AllowedEnabled;
       swapchain_upgrade_type = SwapchainUpgradeType::scRGB;
@@ -1960,7 +2023,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       texture_format_upgrades_2d_size_filters = 0 | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainResolution | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainAspectRatio;
 
 #if DEVELOPMENT
-   forced_shader_names.emplace(std::stoul("897DB2C0", nullptr, 16), "Outline Prefilter");
+      forced_shader_names.emplace(std::stoul("897DB2C0", nullptr, 16), "Outline Prefilter");
       forced_shader_names.emplace(std::stoul("DA85F5BB", nullptr, 16), "OutlineCS (depth)");
       forced_shader_names.emplace(std::stoul("6EEF1071", nullptr, 16), "Temporal Upscale");
       forced_shader_names.emplace(std::stoul("14393629", nullptr, 16), "TAA (for <100% scale)");
@@ -1971,8 +2034,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       forced_shader_names.emplace(std::stoul("50BE35B0", nullptr, 16), "Cutscene Color Grade");
       forced_shader_names.emplace(std::stoul("B9AFD904", nullptr, 16), "Cutscene Overlay Modulate");
       forced_shader_names.emplace(std::stoul("4517077B", nullptr, 16), "Cutscene Overlay Blend");
+      forced_shader_names.emplace(std::stoul("F55707D4", nullptr, 16), "Output");
 #endif
-      enable_samplers_upgrade = true;
+      // enable_samplers_upgrade = true;
+      // ui_separation.enable = true;
+      // ui_separation.scale_ui = true;
+      // ui_separation.format = DXGI_FORMAT_R16G16B16A16_UNORM;
+      // ui_separation.is_ui_phase = GBFRUIPhase;
 
       // Set default buffer values
       // cb_luma_global_settings.GameSettings.TonemapAfterSR = true;
@@ -1998,6 +2066,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
    {
       g_rt_creation_hook.reset();
       g_update_screen_resolution_hook.reset();
+      g_dispatch_viewport_hook.reset();
+      g_ui_orchestrator_hook.reset();
       g_VSSetConstantBuffers1_hook_immediate.reset();
       g_VSSetConstantBuffers1_hook_deferred.reset();
       reshade::unregister_event<reshade::addon_event::execute_secondary_command_list>(GranblueFantasyRelink::OnExecuteSecondaryCommandList);

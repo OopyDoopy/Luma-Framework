@@ -64,7 +64,8 @@ static bool SetupSROutput(
 static bool DrawNativePreSREncodePass(
    ID3D11Device* native_device,
    ID3D11DeviceContext* ctx,
-   const DeviceData& device_data,
+   CommandListData& cmd_list_data,
+   DeviceData& device_data,
    GameDeviceDataGBFR& game_device_data)
 {
    const auto vs_it = device_data.native_vertex_shaders.find(CompileTimeStringHash("Copy VS"));
@@ -81,6 +82,11 @@ static bool DrawNativePreSREncodePass(
    {
       return false;
    }
+   constexpr bool do_safety_checks = false;
+   SetLumaConstantBuffers(ctx, cmd_list_data, device_data, reshade::api::shader_stage::pixel, LumaConstantBufferType::LumaSettings, 0, 0, 0.f, 0.f, do_safety_checks);
+   SetLumaConstantBuffers(ctx, cmd_list_data, device_data, reshade::api::shader_stage::pixel, LumaConstantBufferType::LumaData, 0, 0, 0.f, 0.f, do_safety_checks);
+
+   ctx->OMSetRenderTargets(0, nullptr, nullptr);
 
    D3D11_TEXTURE2D_DESC input_desc = {};
    input_texture->GetDesc(&input_desc);
@@ -110,6 +116,14 @@ static bool DrawNativePreSREncodePass(
       return false;
    }
 
+   // H1: Reset render state that may be left over from the TUP/TAA deferred command list.
+   // DrawNativePreSREncodePass runs on the immediate context after partial_command_list replay;
+   // the predecessor draw (TUP or TAA) may have an active blend mode, depth-stencil test, scissor
+   // rect, or zero write-mask that would corrupt pre_sr_encode_rtv output.
+   ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+   ctx->OMSetDepthStencilState(nullptr, 0);
+   ctx->RSSetState(nullptr);
+
    D3D11_VIEWPORT viewport = {};
    viewport.Width = static_cast<float>(output_desc.Width);
    viewport.Height = static_cast<float>(output_desc.Height);
@@ -133,6 +147,11 @@ static bool DrawNativePreSREncodePass(
    ctx->VSSetShader(vs_it->second.get(), nullptr, 0);
    ctx->PSSetShader(ps_it->second.get(), nullptr, 0);
    ctx->Draw(4, 0);
+
+   // H2: Unbind pre_sr_encode_rtv before FSR reads pre_sr_encode_texture as a CS input.
+   // Leaving the RTV bound triggers a D3D11 resource hazard unbind that can interfere with
+   // FSR's internal state management.
+   ctx->OMSetRenderTargets(0, nullptr, nullptr);
 
    ComPtr<ID3D11Resource> output_resource;
    game_device_data.pre_sr_encode_rtv->GetResource(output_resource.put());
@@ -235,6 +254,7 @@ static bool DrawNativePostSREncodePass(
 
    constexpr bool do_safety_checks = false;
    SetLumaConstantBuffers(ctx, cmd_list_data, device_data, reshade::api::shader_stage::pixel, LumaConstantBufferType::LumaSettings, 0, 0, 0.f, 0.f, do_safety_checks);
+   SetLumaConstantBuffers(ctx, cmd_list_data, device_data, reshade::api::shader_stage::pixel, LumaConstantBufferType::LumaData, 0, 0, 0.f, 0.f, do_safety_checks);
 
    ctx->OMSetRenderTargets(0, nullptr, nullptr);
 

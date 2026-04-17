@@ -21,7 +21,7 @@ void main(float4 v0: SV_Position0, out float4 o0: SV_Target0)
 #if UI_DRAW_TYPE == 2 // Scale by the inverse of the relative UI brightness so we can draw the UI at brightness 1x and
                       // then multiply it back to its intended range
    ColorGradingLUTTransferFunctionInOutCorrected(color_linear, VANILLA_ENCODING_TYPE, GAMMA_CORRECTION_TYPE, true);
-   color_linear *= LumaSettings.GamePaperWhiteNits / LumaSettings.UIPaperWhiteNits;
+   color_linear *= GAME_NITS / UI_NITS;
    ColorGradingLUTTransferFunctionInOutCorrected(color_linear, GAMMA_CORRECTION_TYPE, VANILLA_ENCODING_TYPE, true);
 #endif
 

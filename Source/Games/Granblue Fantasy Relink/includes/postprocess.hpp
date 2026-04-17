@@ -131,6 +131,8 @@ struct GBFROutlineReplayState
    bool valid = false;
    ComPtr<ID3D11ComputeShader> compute_shader;
    std::array<ComPtr<ID3D11Buffer>, kCapturedConstantBufferCount> cs_constant_buffers;
+   std::array<UINT, kCapturedConstantBufferCount> cs_constant_buffer_first_constants = {};
+   std::array<UINT, kCapturedConstantBufferCount> cs_constant_buffer_num_constants = {};
    std::array<ComPtr<ID3D11SamplerState>, kCapturedSamplerCount> cs_samplers;
    ComPtr<ID3D11ShaderResourceView> cs_depth_srv;
    ComPtr<ID3D11ShaderResourceView> cs_stencil_srv;
@@ -143,6 +145,8 @@ struct GBFROutlineReplayState
       {
          buffer = nullptr;
       }
+      cs_constant_buffer_first_constants.fill(0);
+      cs_constant_buffer_num_constants.fill(0);
       for (auto& sampler : cs_samplers)
       {
          sampler = nullptr;

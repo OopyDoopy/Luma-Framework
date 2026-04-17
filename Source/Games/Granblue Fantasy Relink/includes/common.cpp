@@ -15,6 +15,7 @@ ShaderHashesList<false>& shader_hashes_CutsceneGamma = g_shader_hashes.cutscene_
 ShaderHashesList<false>& shader_hashes_CutsceneColorGrade = g_shader_hashes.cutscene_color_grade;
 ShaderHashesList<false>& shader_hashes_CutsceneOverlayBlend = g_shader_hashes.cutscene_overlay_blend;
 ShaderHashesList<false>& shader_hashes_CutsceneOverlayModulate = g_shader_hashes.cutscene_overlay_modulate;
+ShaderHashesList<false>& shader_hashes_Output = g_shader_hashes.output;
 
 float& render_scale = g_runtime_settings.render_scale;
 bool& render_scale_changed = g_runtime_settings.render_scale_changed;
