@@ -79,6 +79,26 @@ bool CreateOrRecreateTextureIfNeeded(GameDeviceDataGBFR& game_device_data, ID3D1
    return false;
 }
 
+bool IsTonemapAfterTAAEnabled(bool require_taa_running)
+{
+   const bool tonemap_enabled = *GetShaderDefineData(char_ptr_crc32("TONEMAP_AFTER_TAA")).compiled_data.GetValue() != '0';
+   return tonemap_enabled && (!require_taa_running || IsTAARunningThisFrame());
+}
+
+void RefreshFrameJitterForPostProcess(GameDeviceDataGBFR& game_device_data)
+{
+   game_device_data.prev_table_jitter = game_device_data.table_jitter;
+#ifdef PATCH_JITTER_TABLE_INIT
+   TryReadTableJitterFromCounter(game_device_data.table_jitter);
+#else
+   TryReadTableJitter(game_device_data.table_jitter);
+#endif
+#if TEST || DEVELOPMENT
+   game_device_data.prev_jitter = game_device_data.jitter;
+   TryReadCameraJitter(game_device_data.jitter);
+#endif
+}
+
 ID3D11ShaderResourceView* GetPostAAColorInputSRV(const DeviceData& device_data, const GameDeviceDataGBFR& game_device_data)
 {
    const bool use_sr_input = device_data.sr_type != SR::Type::None && !device_data.sr_suppressed;

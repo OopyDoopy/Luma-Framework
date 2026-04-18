@@ -55,7 +55,7 @@ public:
    void OnInit(bool async) override
    {
       luma_settings_cbuffer_index = 9;
-      luma_data_cbuffer_index = 8;
+      luma_data_cbuffer_index = 10;
 
       std::vector<ShaderDefineData> game_shader_defines_data = {
          {"TONEMAP_AFTER_TAA", '1', true, false, "If set to 1, tonemapping will be applied after TAA", 1},
@@ -129,7 +129,7 @@ public:
          device_data.cb_luma_global_settings_dirty = true;
       }
 
-      bool tonemap_after_taa = *GetShaderDefineData(char_ptr_crc32("TONEMAP_AFTER_TAA")).compiled_data.GetValue() != '0';
+      const bool tonemap_after_taa = IsTonemapAfterTAAEnabled(false);
 
       if (original_shader_hashes.Contains(shader_hashes_Bloom))
       {
@@ -332,15 +332,25 @@ public:
 
                   // Split here: partial_command_list captures all draws up to (not including) TAA,
                   // including the hash-replaced tonemap passthrough.
-                  native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
-
-                  if (game_device_data.modifiable_index_vertex_buffer)
+                  if (native_device_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
                   {
-                     D3D11_MAPPED_SUBRESOURCE mapped_buffer;
-                     native_device_context->Map(game_device_data.modifiable_index_vertex_buffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_buffer);
-                     native_device_context->Unmap(game_device_data.modifiable_index_vertex_buffer.get(), 0);
+                     native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+
+                     if (game_device_data.modifiable_index_vertex_buffer)
+                     {
+                        D3D11_MAPPED_SUBRESOURCE mapped_buffer;
+                        native_device_context->Map(game_device_data.modifiable_index_vertex_buffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_buffer);
+                        native_device_context->Unmap(game_device_data.modifiable_index_vertex_buffer.get(), 0);
+                     }
+                     game_device_data.draw_device_context = native_device_context;
                   }
-                  game_device_data.draw_device_context = native_device_context;
+                  else
+                  {
+                     game_device_data.draw_device_context = nullptr;
+                     game_device_data.partial_command_list.reset();
+                     RefreshFrameJitterForPostProcess(game_device_data);
+                     RunLatePostProcessPasses(native_device_context, cmd_list_data, device_data, game_device_data);
+                  }
                }
                return DrawOrDispatchOverrideType::Replaced;
             }(game_device_data, native_device, native_device_context, device_data, cmd_list_data);
@@ -374,8 +384,18 @@ public:
             rtvs[1] = game_device_data.taa_output_texture_rtv.get();
             native_device_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, &rtvs[0], dsv);
 
-            game_device_data.draw_device_context = native_device_context;
-            native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+            if (native_device_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
+            {
+               game_device_data.draw_device_context = native_device_context;
+               native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+            }
+            else
+            {
+               game_device_data.draw_device_context = nullptr;
+               game_device_data.partial_command_list.reset();
+               RefreshFrameJitterForPostProcess(game_device_data);
+               RunLatePostProcessPasses(native_device_context, cmd_list_data, device_data, game_device_data);
+            }
             override_type = DrawOrDispatchOverrideType::Replaced;
          }
          else
@@ -392,7 +412,7 @@ public:
          DrawOrDispatchOverrideType override_type = DrawOrDispatchOverrideType::Replaced;
          if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed)
          {
-            override_type = [](GameDeviceDataGBFR& game_device_data, ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, DeviceData& device_data) -> DrawOrDispatchOverrideType
+            override_type = [](GameDeviceDataGBFR& game_device_data, ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, DeviceData& device_data, CommandListData& cmd_list_data) -> DrawOrDispatchOverrideType
             {
                ID3D11RenderTargetView* rt;
                native_device_context->OMGetRenderTargets(1, &rt, nullptr);
@@ -416,16 +436,26 @@ public:
                   // guaranteed valid here. Deferred to OnExecuteSecondaryCommandList where
                   // the TAA command list has already executed on the immediate context.
                }
-               game_device_data.draw_device_context = native_device_context;
-               native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
-               if (game_device_data.modifiable_index_vertex_buffer)
+               if (native_device_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
                {
-                  D3D11_MAPPED_SUBRESOURCE mapped_buffer;
-                  native_device_context->Map(game_device_data.modifiable_index_vertex_buffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_buffer);
-                  native_device_context->Unmap(game_device_data.modifiable_index_vertex_buffer.get(), 0);
+                  game_device_data.draw_device_context = native_device_context;
+                  native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+                  if (game_device_data.modifiable_index_vertex_buffer)
+                  {
+                     D3D11_MAPPED_SUBRESOURCE mapped_buffer;
+                     native_device_context->Map(game_device_data.modifiable_index_vertex_buffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_buffer);
+                     native_device_context->Unmap(game_device_data.modifiable_index_vertex_buffer.get(), 0);
+                  }
+               }
+               else
+               {
+                  game_device_data.draw_device_context = nullptr;
+                  game_device_data.partial_command_list.reset();
+                  RefreshFrameJitterForPostProcess(game_device_data);
+                  RunLatePostProcessPasses(native_device_context, cmd_list_data, device_data, game_device_data);
                }
                return DrawOrDispatchOverrideType::Replaced;
-            }(game_device_data, native_device, native_device_context, device_data);
+            }(game_device_data, native_device, native_device_context, device_data, cmd_list_data);
          }
          else
          {
@@ -455,8 +485,18 @@ public:
             rtvs[0] = game_device_data.taa_output_texture_rtv.get();
             native_device_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, &rtvs[0], dsv);
 
-            game_device_data.draw_device_context = native_device_context;
-            native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+            if (native_device_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
+            {
+               game_device_data.draw_device_context = native_device_context;
+               native_device_context->FinishCommandList(TRUE, game_device_data.partial_command_list.put());
+            }
+            else
+            {
+               game_device_data.draw_device_context = nullptr;
+               game_device_data.partial_command_list.reset();
+               RefreshFrameJitterForPostProcess(game_device_data);
+               RunLatePostProcessPasses(native_device_context, cmd_list_data, device_data, game_device_data);
+            }
          }
          return override_type;
       }
@@ -468,27 +508,39 @@ public:
          RedirectUIDrawToScaledTarget(native_device_context, device_data, game_device_data);
       }
 
-      // Capture the Output shader state for replay in the immediate context.
-      // Always intercepted at render_scale != 1 — the decision of whether to composite
-      // UI onto the output (or draw as recorded) is made in ReplayOutputDraw, where DC_UI
-      // is guaranteed complete and ui_phase_seen_this_frame is safe to read.
+      // Capture Output for deferred-context replay only.
+      // Immediate-context output draws run natively, with an optional source SRV override
+      // when UI was redirected to the scaled composition target.
       if (original_shader_hashes.Contains(shader_hashes_Output) && render_scale != 1.f && !IsTAARunningThisFrame())
       {
-         CaptureOutputReplayState(native_device_context, game_device_data.ui_scale.output_replay_state);
-
-         // Unbind scaled_texture_rtv before sealing the command list.  If it remains bound as
-         // RTV inside the partial command list, D3D11 silently nulls the SRV binding when we
-         // try to read scaled_texture in ReplayOutputDraw (same-resource RTV/SRV hazard).
-         if (game_device_data.ui_scale.ui_scaled_needed)
+         if (native_device_context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
          {
-            ID3D11RenderTargetView* null_rtv = nullptr;
-            native_device_context->OMSetRenderTargets(1, &null_rtv, nullptr);
+            CaptureOutputReplayState(native_device_context, game_device_data.ui_scale.output_replay_state);
+
+            // Unbind scaled_texture_rtv before sealing the command list.  If it remains bound as
+            // RTV inside the partial command list, D3D11 silently nulls the SRV binding when we
+            // try to read scaled_texture in ReplayOutputDraw (same-resource RTV/SRV hazard).
+            if (game_device_data.ui_scale.ui_scaled_needed)
+            {
+               ID3D11RenderTargetView* null_rtv = nullptr;
+               native_device_context->OMSetRenderTargets(1, &null_rtv, nullptr);
+            }
+
+            game_device_data.ui_scale.output_device_context.store(native_device_context, std::memory_order_release);
+            game_device_data.ui_scale.output_pending.store(true, std::memory_order_release);
+            native_device_context->FinishCommandList(TRUE, game_device_data.ui_scale.output_partial_command_list.put());
+            return DrawOrDispatchOverrideType::Skip;
          }
 
-         game_device_data.ui_scale.output_device_context.store(native_device_context, std::memory_order_release);
-         game_device_data.ui_scale.output_pending.store(true, std::memory_order_release);
-         native_device_context->FinishCommandList(TRUE, game_device_data.ui_scale.output_partial_command_list.put());
-         return DrawOrDispatchOverrideType::Skip;
+         // Immediate-context output: keep the game's native draw and only override source SRV
+         // when the UI was redirected to the scaled composition target.
+         if (game_device_data.ui_scale.ui_scaled_needed.load(std::memory_order_acquire) &&
+             game_device_data.ui_scale.scaled_texture_srv)
+         {
+            ID3D11ShaderResourceView* scaled_srv = game_device_data.ui_scale.scaled_texture_srv.get();
+            native_device_context->PSSetShaderResources(0, 1, &scaled_srv);
+         }
+         return DrawOrDispatchOverrideType::None;
       }
       return DrawOrDispatchOverrideType::None;
    }
@@ -563,572 +615,9 @@ public:
                // Read jitter here, mid-frame, after geometry/camera setup but before DLSS and
                // all custom passes. By the time the partial command list (containing TAA) has
                // been replayed the game must have written the current-frame projection jitter.
-
-               game_device_data.prev_table_jitter = game_device_data.table_jitter;
-#ifdef PATCH_JITTER_TABLE_INIT
-               TryReadTableJitterFromCounter(game_device_data.table_jitter);
-#else
-               TryReadTableJitter(game_device_data.table_jitter);
-#endif
-#if TEST || DEVELOPMENT
-               game_device_data.prev_jitter = game_device_data.jitter;
-               TryReadCameraJitter(game_device_data.jitter);
-#endif
+               RefreshFrameJitterForPostProcess(game_device_data);
                CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
-
-               DrawStateStack<DrawStateStackType::FullGraphics> draw_state_stack;
-               DrawStateStack<DrawStateStackType::Compute> compute_state_stack;
-               draw_state_stack.Cache(native_device_context.get(), device_data.uav_max_count);
-               compute_state_stack.Cache(native_device_context.get(), device_data.uav_max_count);
-
-               bool tonemap_after_taa = *GetShaderDefineData(char_ptr_crc32("TONEMAP_AFTER_TAA")).compiled_data.GetValue() != '0' && IsTAARunningThisFrame();
-
-               // TUP path: TAA partial_command_list has just executed so sr_source_color is valid.
-               // DrawNativePreSREncodePass was intentionally deferred from recording time to here.
-               if (render_scale != 1.f && device_data.sr_type != SR::Type::None && !device_data.sr_suppressed && cb_luma_global_settings.DisplayMode == DisplayModeType::HDR)
-               {
-
-                  {
-                     ComPtr<ID3D11Device> native_device;
-                     native_device_context->GetDevice(native_device.put());
-
-                     const bool pre_sr_ok = DrawNativePreSREncodePass(native_device.get(), native_device_context.get(), cmd_list_data, device_data, game_device_data);
-#if TEST || DEVELOPMENT
-                     if (!pre_sr_ok)
-                     {
-                        std::string reason = "prerequisite missing:";
-                        const auto vs_it = device_data.native_vertex_shaders.find(CompileTimeStringHash("Copy VS"));
-                        const auto ps_it = device_data.native_pixel_shaders.find(CompileTimeStringHash("GBFR Pre SR Encode"));
-                        if (vs_it == device_data.native_vertex_shaders.end() || !vs_it->second)
-                           reason += " copy_vs=missing;";
-                        if (ps_it == device_data.native_pixel_shaders.end() || !ps_it->second)
-                           reason += " pre_sr_encode_ps=missing;";
-                        if (!game_device_data.sr_source_color.get())
-                           reason += " sr_source_color=null;";
-                        if (!game_device_data.sr_source_color_srv.get())
-                           reason += " sr_source_color_srv=null;";
-                        LogExpectedCustomDrawSkipped("PreSREncode (TUP path)", reason);
-                     }
-#endif
-                  }
-               }
-
-               if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed)
-               {
-                  auto* sr_instance_data = device_data.GetSRInstanceData();
-                  {
-                     SR::SettingsData settings_data;
-                     settings_data.output_width = static_cast<uint>(device_data.output_resolution.x);
-                     settings_data.output_height = static_cast<uint>(device_data.output_resolution.y);
-                     settings_data.render_width = static_cast<uint>(device_data.render_resolution.x);
-                     settings_data.render_height = static_cast<uint>(device_data.render_resolution.y);
-                     settings_data.dynamic_resolution = false;
-                     settings_data.hdr = cb_luma_global_settings.DisplayMode == DisplayModeType::HDR ? true : false;
-                     settings_data.auto_exposure = true;
-                     settings_data.inverted_depth = false;
-                     // Granblue MVs are unjittered (g_ProjectionOffset cancels jitter in the PS)
-                     settings_data.mvs_jittered = false;
-                     settings_data.mvs_x_scale = -(float)device_data.render_resolution.x;
-                     settings_data.mvs_y_scale = -(float)device_data.render_resolution.y;
-                     settings_data.render_preset = dlss_render_preset;
-                     sr_implementations[device_data.sr_type]->UpdateSettings(sr_instance_data, native_device_context.get(), settings_data);
-                  }
-
-                  // Prepare SR draw data
-                  {
-                     bool reset_sr = device_data.force_reset_sr || game_device_data.output_changed;
-                     device_data.force_reset_sr = false;
-                     float jitter_x = game_device_data.table_jitter.x;
-                     float jitter_y = game_device_data.table_jitter.y;
-#if TEST || DEVELOPMENT
-                     if (!game_device_data.use_table_jitter_for_dlss)
-                     {
-                        jitter_x = game_device_data.jitter.x;
-                        jitter_y = game_device_data.jitter.y;
-                     }
-#endif
-                     SR::SuperResolutionImpl::DrawData draw_data;
-                     draw_data.source_color = game_device_data.sr_source_color.get();
-                     draw_data.output_color = game_device_data.sr_output_color.get();
-                     draw_data.motion_vectors = game_device_data.sr_motion_vectors.get();
-                     draw_data.depth_buffer = game_device_data.depth_buffer.get();
-                     draw_data.pre_exposure = 0.0f;
-                     // Pass the engine's AdaptLuminance texture as an exposure hint to DLSS.
-                     // Only set when the tonemap intercept has already captured it this frame.
-                     // Note: DLSS expects pInExposureTexture to be a 1×1 texture; if AdaptLuminance
-                     // is a different size, DLSS may ignore it — auto_exposure=true provides a fallback.
-                     if (tonemap_after_taa)
-                     {
-                        draw_data.exposure = game_device_data.exposure_texture.get();
-                     }
-                     // Pass the frame jitter tracked by this module.
-                     draw_data.jitter_x = jitter_x;
-                     draw_data.jitter_y = jitter_y;
-                     draw_data.vert_fov = game_device_data.camera_fov;
-                     draw_data.far_plane = game_device_data.camera_far;
-                     draw_data.near_plane = game_device_data.camera_near;
-                     draw_data.reset = reset_sr;
-                     draw_data.render_width = device_data.render_resolution.x;
-                     draw_data.render_height = device_data.render_resolution.y;
-
-                     // Execute SR
-#if TEST || DEVELOPMENT
-                     {
-                        std::string pre_draw_issues;
-                        if (!draw_data.source_color)
-                           pre_draw_issues += " source_color=null;";
-                        if (!draw_data.output_color)
-                           pre_draw_issues += " output_color=null;";
-                        if (!draw_data.motion_vectors)
-                           pre_draw_issues += " motion_vectors=null;";
-                        if (!draw_data.depth_buffer)
-                           pre_draw_issues += " depth_buffer=null;";
-                        if (!sr_instance_data)
-                           pre_draw_issues += " sr_instance_data=null;";
-                        if (!pre_draw_issues.empty())
-                        {
-                           LogExpectedCustomDrawSkipped("SR", "null inputs before Draw:" + pre_draw_issues);
-                        }
-                     }
-#endif
-                     if (sr_implementations[device_data.sr_type]->Draw(sr_instance_data, native_device_context.get(), draw_data))
-                     {
-                        device_data.has_drawn_sr = true;
-                     }
-                     else
-                     {
-                        device_data.has_drawn_sr = false;
-                        device_data.force_reset_sr = true;
-#if TEST || DEVELOPMENT
-                        {
-                           std::string reason = "SR::Draw returned false; draw inputs:";
-                           if (!draw_data.source_color)
-                              reason += " source_color=null;";
-                           if (!draw_data.output_color)
-                              reason += " output_color=null;";
-                           if (!draw_data.motion_vectors)
-                              reason += " motion_vectors=null;";
-                           if (!draw_data.depth_buffer)
-                              reason += " depth_buffer=null;";
-                           if (!sr_instance_data)
-                              reason += " sr_instance_data=null;";
-                           if (draw_data.render_width <= 0.f || draw_data.render_height <= 0.f)
-                              reason += " render_dims_invalid(" + std::to_string(static_cast<int>(draw_data.render_width)) + "x" + std::to_string(static_cast<int>(draw_data.render_height)) + ");";
-                           LogExpectedCustomDrawSkipped("SR", reason);
-                        }
-#endif
-                     }
-#if DEVELOPMENT
-                     // Add trace info for DLSS/FSR execution
-                     if (device_data.has_drawn_sr)
-                     {
-                        const std::shared_lock lock_trace(s_mutex_trace);
-                        if (trace_running)
-                        {
-                           const std::unique_lock lock_trace_2(cmd_list_data.mutex_trace);
-                           TraceDrawCallData trace_draw_call_data;
-                           trace_draw_call_data.type = TraceDrawCallData::TraceDrawCallType::Custom;
-                           trace_draw_call_data.command_list = native_device_context.get();
-                           trace_draw_call_data.custom_name = device_data.sr_type == SR::Type::DLSS
-                                                                 ? "DLSS-SR"
-                                                                 : "FSR-SR";
-                           GetResourceInfo(game_device_data.sr_output_color.get(), trace_draw_call_data.rt_size[0], trace_draw_call_data.rt_format[0], &trace_draw_call_data.rt_type_name[0], &trace_draw_call_data.rt_hash[0]);
-                           cmd_list_data.trace_draw_calls_data.insert(cmd_list_data.trace_draw_calls_data.end() - 1, trace_draw_call_data);
-                        }
-                     }
-#endif
-                     draw_state_stack.Restore(native_device_context.get());
-                     compute_state_stack.Restore(native_device_context.get());
-                  }
-               }
-
-               // Pipeline chain SRV threaded through late-replay passes (split -> PostSREncode -> MotionBlur -> Tonemap -> Cutscene -> UI)
-               ID3D11ShaderResourceView* pipeline_color_srv = GetPostAAColorInputSRV(device_data, game_device_data);
-
-               auto run_chained_color_pass = [&](const char* pass_name, auto&& draw_fn) -> bool
-               {
-                  if (!pipeline_color_srv)
-                  {
-#if TEST || DEVELOPMENT
-                     LogExpectedCustomDrawSkipped(pass_name, "pipeline_color_srv=null");
-#endif
-                     return false;
-                  }
-
-                  ID3D11ShaderResourceView* next_srv = nullptr;
-                  if (!draw_fn(pipeline_color_srv, next_srv))
-                  {
-                     return false;
-                  }
-
-                  if (!next_srv)
-                  {
-#if TEST || DEVELOPMENT
-                     LogExpectedCustomDrawSkipped(pass_name, "draw succeeded but output SRV is null");
-#endif
-                     return false;
-                  }
-
-                  pipeline_color_srv = next_srv;
-                  return true;
-               };
-
-               // PostSREncode normalizes color space: G→L if no HDR-SR, else L→G if HDR-SR, else skip
-               {
-                  // const bool hdr_sr = (cb_luma_global_settings.DisplayMode == DisplayModeType::HDR) &&
-                  //                     (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed && device_data.has_drawn_sr);
-                  // const bool should_run = tonemap_after_taa ? !hdr_sr : hdr_sr;
-                  // if (should_run)
-                  {
-                     if (pipeline_color_srv)
-                     {
-                        const bool post_sr_ok = run_chained_color_pass("PostSREncode", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                           {
-                           // Use pre-DLSS input for alpha extraction if SR was executed.
-                           ID3D11ShaderResourceView* alpha_source_srv = nullptr;
-                           if (device_data.sr_type != SR::Type::None && !device_data.sr_suppressed && device_data.has_drawn_sr)
-                           {
-                              alpha_source_srv = game_device_data.sr_source_color_srv.get();
-                           }
-
-                           if (!DrawNativePostSREncodePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv, alpha_source_srv))
-                           {
-                              return false;
-                           }
-
-                           out_srv = game_device_data.post_sr_encode_srv.get();
-                           return true; });
-#if TEST || DEVELOPMENT
-                        if (!post_sr_ok)
-                        {
-                           std::string reason = "DrawNativePostSREncodePass failed:";
-                           {
-                              const auto vs_chk = device_data.native_vertex_shaders.find(CompileTimeStringHash("Copy VS"));
-                              if (vs_chk == device_data.native_vertex_shaders.end() || !vs_chk->second)
-                                 reason += " copy_vs=missing;";
-                           }
-                           {
-                              const auto ps_chk = device_data.native_pixel_shaders.find(CompileTimeStringHash("GBFR Post SR Encode"));
-                              if (ps_chk == device_data.native_pixel_shaders.end() || !ps_chk->second)
-                                 reason += " post_sr_encode_ps=missing;";
-                           }
-                           if (!pipeline_color_srv)
-                              reason += " input_srv=null;";
-                           LogExpectedCustomDrawSkipped("PostSREncode", reason);
-                        }
-#endif
-                     }
-#if TEST || DEVELOPMENT
-                     else
-                     {
-                        LogExpectedCustomDrawSkipped("PostSREncode", "should_run=true but pipeline_color_srv is null");
-                     }
-#endif
-                  }
-               }
-
-               if (game_device_data.motion_blur_pending.load(std::memory_order_acquire))
-               {
-                  const bool use_sr_input = device_data.sr_type != SR::Type::None && !device_data.sr_suppressed;
-                  const bool after_sr = !use_sr_input || device_data.has_drawn_sr;
-                  if (after_sr && CanDrawNativeMotionBlurPass(pipeline_color_srv, game_device_data))
-                  {
-                     const bool motion_blur_ok = run_chained_color_pass("MotionBlur", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeMotionBlurPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
-                        if (!game_device_data.motion_blur_output_ready)
-                        {
-                           return false;
-                        }
-
-                        out_srv = game_device_data.motion_blur_output_srv.get();
-                        return true; });
-#if TEST || DEVELOPMENT
-                     if (!motion_blur_ok)
-                     {
-                        LogExpectedCustomDrawSkipped("MotionBlur", "DrawNativeMotionBlurPass did not produce output (motion_blur_output_ready=false)");
-                     }
-#endif
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason;
-                     if (!after_sr)
-                     {
-                        reason = "pending replay, but SR output is not ready yet";
-                     }
-                     else
-                     {
-                        reason = "prerequisite missing:";
-                        if (!pipeline_color_srv)
-                           reason += " pipeline_color_srv=null;";
-                        if (!game_device_data.motion_blur_first_pass_seen)
-                           reason += " first_pass_not_seen;";
-                        if (!game_device_data.motion_blur_second_pass_seen)
-                           reason += " second_pass_not_seen;";
-                        if (!game_device_data.motion_blur_replay_states[0].valid)
-                           reason += " replay_state0_invalid;";
-                        if (!game_device_data.motion_blur_replay_states[1].valid)
-                           reason += " replay_state1_invalid;";
-                        if (!game_device_data.taa_output_texture.get())
-                           reason += " taa_output_texture=null;";
-                     }
-                     LogExpectedCustomDrawSkipped("MotionBlur", reason);
-                  }
-#endif
-                  // Never stall tonemap if motion blur replay is unavailable in this frame.
-                  game_device_data.motion_blur_pending.store(false, std::memory_order_release);
-                  game_device_data.motion_blur_seen = false;
-                  game_device_data.motion_blur_first_pass_seen = false;
-                  game_device_data.motion_blur_second_pass_seen = false;
-                  game_device_data.motion_blur_output_ready = false;
-                  game_device_data.motion_blur_invocation_count = 0;
-                  game_device_data.motion_blur_replay_states[0].Reset();
-                  game_device_data.motion_blur_replay_states[1].Reset();
-               }
-
-               // Tonemap writes to cutscene_intermediate_rtv for UIEncode consumption
-               if (game_device_data.tonemap_draw_pending.load(std::memory_order_acquire))
-               {
-                  const bool use_sr_input = device_data.sr_type != SR::Type::None && !device_data.sr_suppressed;
-                  const bool after_sr = !use_sr_input || device_data.has_drawn_sr;
-                  const bool ready = after_sr && CanDrawNativeTonemapPass(pipeline_color_srv, game_device_data);
-                  if (ready)
-                  {
-                     const bool tonemap_ok = run_chained_color_pass("Tonemap", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeTonemapPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
-                        out_srv = game_device_data.cutscene_intermediate_srv.get();
-                        return true; });
-                     game_device_data.tonemap_draw_pending.store(false, std::memory_order_release);
-                     game_device_data.exposure_texture = nullptr;
-                     game_device_data.exposure_texture_srv = nullptr;
-                     game_device_data.bloom_texture_srv = nullptr;
-#if TEST || DEVELOPMENT
-                     if (!tonemap_ok)
-                     {
-                        LogExpectedCustomDrawSkipped("Tonemap", "DrawNativeTonemapPass did not produce output SRV");
-                     }
-#endif
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason;
-                     if (!after_sr)
-                     {
-                        reason = "pending replay, but SR output is not ready yet";
-                     }
-                     else
-                     {
-                        reason = "prerequisite missing:";
-                        if (!pipeline_color_srv)
-                           reason += " pipeline_color_srv=null;";
-                        if (!game_device_data.exposure_texture_srv.get())
-                           reason += " exposure_texture_srv=null;";
-                        if (!game_device_data.bloom_texture_srv.get())
-                           reason += " bloom_texture_srv=null;";
-                        if (!game_device_data.taa_output_texture.get())
-                           reason += " taa_output_texture=null;";
-                     }
-                     LogExpectedCustomDrawSkipped("Tonemap", reason);
-                  }
-#endif
-               }
-
-               if (game_device_data.cutscene_gamma_pending.load(std::memory_order_acquire))
-               {
-                  if (CanDrawNativeCutsceneGammaPass(pipeline_color_srv, game_device_data))
-                  {
-                     run_chained_color_pass("CutsceneGamma", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeCutsceneGammaPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
-                        out_srv = game_device_data.cutscene_gamma_srv.get();
-                        return true; });
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.taa_output_texture.get())
-                        reason += " taa_output_texture=null;";
-                     if (!game_device_data.cutscene_gamma_replay_state.valid)
-                        reason += " cutscene_gamma_replay_state_invalid;";
-                     LogExpectedCustomDrawSkipped("CutsceneGamma", reason);
-                  }
-#endif
-                  game_device_data.cutscene_gamma_pending.store(false, std::memory_order_release);
-                  game_device_data.cutscene_gamma_replay_state.Reset();
-               }
-
-               if (game_device_data.cutscene_color_grade_pending.load(std::memory_order_acquire))
-               {
-                  if (CanDrawNativeCutsceneColorGradePass(pipeline_color_srv, game_device_data))
-                  {
-                     run_chained_color_pass("CutsceneColorGrade", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeCutsceneColorGradePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
-                        out_srv = game_device_data.cutscene_color_grade_srv.get();
-                        return true; });
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.taa_output_texture.get())
-                        reason += " taa_output_texture=null;";
-                     if (!game_device_data.cutscene_color_grade_replay_state.valid)
-                        reason += " cutscene_color_grade_replay_state_invalid;";
-                     LogExpectedCustomDrawSkipped("CutsceneColorGrade", reason);
-                  }
-#endif
-                  game_device_data.cutscene_color_grade_pending.store(false, std::memory_order_release);
-                  game_device_data.cutscene_color_grade_replay_state.Reset();
-               }
-
-               if (game_device_data.cutscene_overlay_modulate_pending.load(std::memory_order_acquire))
-               {
-                  if (CanDrawNativeCutsceneOverlayModulatePass(pipeline_color_srv, game_device_data))
-                  {
-                     const bool overlay_modulate_ok = run_chained_color_pass("CutsceneOverlayModulate", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeCutsceneOverlayModulatePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv);
-                        out_srv = game_device_data.cutscene_overlay_modulate_srv.get();
-                        return true; });
-#if TEST || DEVELOPMENT
-                     if (!overlay_modulate_ok)
-                     {
-                        LogExpectedCustomDrawSkipped("CutsceneOverlayModulate", "DrawNativeCutsceneOverlayModulatePass did not produce output SRV");
-                     }
-#endif
-                     game_device_data.cutscene_overlay_modulate_pending.store(false, std::memory_order_release);
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.taa_output_texture.get())
-                        reason += " taa_output_texture=null;";
-                     if (!game_device_data.cutscene_overlay_modulate_replay_state.valid)
-                        reason += " cutscene_overlay_modulate_replay_state_invalid;";
-                     LogExpectedCustomDrawSkipped("CutsceneOverlayModulate", reason);
-                  }
-#endif
-                  game_device_data.cutscene_overlay_modulate_replay_state.Reset();
-               }
-
-               if (game_device_data.cutscene_overlay_blend_pending.load(std::memory_order_acquire))
-               {
-                  if (CanDrawNativeCutsceneOverlayBlendPass(pipeline_color_srv, game_device_data))
-                  {
-                     run_chained_color_pass("CutsceneOverlayBlend", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        DrawNativeCutsceneOverlayBlendPass(native_device_context.get(), cmd_list_data, device_data, game_device_data, input_srv, game_device_data.cutscene_intermediate_rtv.get());
-                        out_srv = game_device_data.cutscene_intermediate_srv.get();
-                        return true; });
-                     game_device_data.cutscene_overlay_blend_pending.store(false, std::memory_order_release);
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.cutscene_intermediate_rtv.get())
-                        reason += " cutscene_intermediate_rtv=null;";
-                     if (!game_device_data.taa_output_texture.get())
-                        reason += " taa_output_texture=null;";
-                     if (!game_device_data.cutscene_overlay_blend_replay_state.valid)
-                        reason += " cutscene_overlay_blend_replay_state_invalid;";
-                     LogExpectedCustomDrawSkipped("CutsceneOverlayBlend", reason);
-                  }
-#endif
-
-                  game_device_data.cutscene_overlay_blend_replay_state.Reset();
-               }
-
-               if (game_device_data.outline_pending.load(std::memory_order_acquire))
-               {
-                  if (CanDrawNativeOutlinePass(pipeline_color_srv, game_device_data))
-                  {
-                     const bool outline_ok = run_chained_color_pass("OutlineCS", [&](ID3D11ShaderResourceView* input_srv, ID3D11ShaderResourceView*& out_srv) -> bool
-                        {
-                        if (!DrawNativeOutlinePass(native_device_context.get(), device_data, game_device_data, input_srv))
-                        {
-                           return false;
-                        }
-
-                        out_srv = game_device_data.outline_srv.get();
-                        return true; });
-#if TEST || DEVELOPMENT
-                     if (!outline_ok)
-                     {
-                        LogExpectedCustomDrawSkipped("OutlineCS", "DrawNativeOutlinePass failed");
-                     }
-#endif
-                  }
-#if TEST || DEVELOPMENT
-                  else
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.outline_replay_state.valid)
-                        reason += " outline_replay_state_invalid;";
-                     if (!game_device_data.taa_output_texture.get())
-                        reason += " taa_output_texture=null;";
-                     LogExpectedCustomDrawSkipped("OutlineCS", reason);
-                  }
-#endif
-                  game_device_data.outline_pending.store(false, std::memory_order_release);
-                  game_device_data.outline_replay_state.Reset();
-               }
-
-               {
-                  bool can_draw_ui_encode = CanDrawNativeUIEncodePass(pipeline_color_srv, game_device_data);
-                  const bool sr_enabled = device_data.sr_type != SR::Type::None && !device_data.sr_suppressed;
-#if TEST || DEVELOPMENT
-                  if (sr_enabled)
-                  {
-                     if (!game_device_data.pre_sr_encode_srv.get() || !device_data.has_drawn_sr)
-                     {
-                        std::string reason = "SR enabled but prerequisite missing:";
-                        if (!game_device_data.pre_sr_encode_srv.get())
-                           reason += " pre_sr_encode_srv=null;";
-                        if (!device_data.has_drawn_sr)
-                           reason += " sr_not_drawn;";
-                        LogExpectedCustomDrawSkipped("UIEncode (SR composite inputs)", reason);
-                     }
-                  }
-#endif
-
-#if TEST || DEVELOPMENT
-                  if (!can_draw_ui_encode)
-                  {
-                     std::string reason = "prerequisite missing:";
-                     if (!pipeline_color_srv)
-                        reason += " pipeline_color_srv=null;";
-                     if (!game_device_data.taa_output_texture_rtv.get())
-                        reason += " taa_output_texture_rtv=null;";
-                     LogExpectedCustomDrawSkipped("UIEncode", reason);
-                  }
-#endif
-
-                  if (can_draw_ui_encode)
-                  {
-                     DrawNativeUIEncodePass(native_device_context.get(), cmd_list_data, device_data, game_device_data, pipeline_color_srv);
-                  }
-               }
-
-               draw_state_stack.Restore(native_device_context.get());
-               compute_state_stack.Restore(native_device_context.get());
+               RunLatePostProcessPasses(native_device_context.get(), cmd_list_data, device_data, game_device_data);
             }
          }
       }
