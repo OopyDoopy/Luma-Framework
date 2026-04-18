@@ -2734,7 +2734,7 @@ namespace
       {
          const std::unique_lock lock(device_data.mutex);
          device_data.swapchains.emplace(swapchain);
-         ASSERT_ONCE(SUCCEEDED(device_data.swapchains.size() == 1)); // Having more than one swapchain per device is probably supported but unexpected
+         ASSERT_ONCE(device_data.swapchains.size() == 1); // Having more than one swapchain per device is probably supported but unexpected
 
          for (uint32_t index = 0; index < back_buffer_count; index++)
          {
@@ -7999,6 +7999,7 @@ namespace
             }
 #endif // ENABLE_AUTO_CBUFFER_RESTORATION
          }
+         break;
       }
       case reshade::api::descriptor_type::sampler:
       {
@@ -13121,7 +13122,7 @@ namespace
                   if (output)
                   {
 #if 1 // Disable it directly
-                     ASSERT_ONCE(output->SetGammaControl(nullptr));
+                     ASSERT_ONCE(SUCCEEDED(output->SetGammaControl(nullptr)));
 #else // Set it to neutral (not really needed, we have no idea how this works in HDR)
                      DXGI_GAMMA_CONTROL gamma_control;
                      ASSERT_ONCE(output->GetGammaControl(&gamma_control));
@@ -13144,7 +13145,7 @@ namespace
                         gamma_control.GammaCurve[i].Blue = value;
                      }
 
-                     ASSERT_ONCE(output->SetGammaControl(&gamma_control));
+                     ASSERT_ONCE(SUCCEEDED(output->SetGammaControl(&gamma_control)));
 #endif
 
                      DXGI_OUTPUT_DESC output_desc = {};
