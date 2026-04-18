@@ -10,6 +10,18 @@ namespace Shader
 {
    constexpr uint8_t meta_version = 2;
 
+   // Only the ones ever compatible with Luma
+   enum class Stage
+   {
+      Vertex,
+      // Requires "GEOMETRY_SHADER_SUPPORT" for full support.
+      Geometry,
+      Pixel,
+      Compute,
+
+      Count,
+   };
+
    static const std::string template_geometry_shader_name = "gs_";
    static const std::string template_vertex_shader_name = "vs_";
    static const std::string template_pixel_shader_name = "ps_";
