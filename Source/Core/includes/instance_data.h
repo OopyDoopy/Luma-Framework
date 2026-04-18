@@ -312,8 +312,8 @@ struct __declspec(uuid("90d9d05b-fdf5-44ee-8650-3bfd0810667a")) CommandListData
          for (auto& original_constant_buffer : original_constant_buffers_stage)
             original_constant_buffer.reset();
 
-      memset(original_constant_buffers_first_constant, 0, sizeof(original_constant_buffers_first_constant));
-      memset(original_constant_buffers_num_constant, 4096, sizeof(original_constant_buffers_num_constant));
+      std::fill_n(&original_constant_buffers_first_constant[0][0], sizeof(original_constant_buffers_first_constant) / sizeof(UINT), 0);
+      std::fill_n(&original_constant_buffers_num_constant[0][0], sizeof(original_constant_buffers_num_constant) / sizeof(UINT), 4096);
    }
 
    void RestoreOriginalConstantBuffers(ID3D11DeviceContext* device_context)

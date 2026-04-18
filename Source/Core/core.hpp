@@ -7989,13 +7989,33 @@ namespace
 
 #if ENABLE_AUTO_CBUFFER_RESTORATION
             CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+            if ((stages & reshade::api::shader_stage::vertex) != 0)
+            {
+               cmd_list_data.original_constant_buffers[(size_t)Shader::Stage::Vertex][update.binding + i] = buffer;
+               // Divide both by 16 as ReShade multiplies it by 16
+               cmd_list_data.original_constant_buffers_first_constant[(size_t)Shader::Stage::Vertex][update.binding + i] = buffer_range.offset / 16;
+               // Fallback to 4096 if not specified as it's the max allowed (it doesn't matter what's the actual buffer size, nor, apparently, what the first offset is)
+               cmd_list_data.original_constant_buffers_num_constant[(size_t)Shader::Stage::Vertex][update.binding + i] = buffer_range.size == UINT64_MAX ? 4096 : (buffer_range.size / 16);
+            }
+#if GEOMETRY_SHADER_SUPPORT
+            if ((stages & reshade::api::shader_stage::geometry) != 0)
+            {
+               cmd_list_data.original_constant_buffers[(size_t)Shader::Stage::Geometry][update.binding + i] = buffer;
+               cmd_list_data.original_constant_buffers_first_constant[(size_t)Shader::Stage::Geometry][update.binding + i] = buffer_range.offset / 16;
+               cmd_list_data.original_constant_buffers_num_constant[(size_t)Shader::Stage::Geometry][update.binding + i] = buffer_range.size == UINT64_MAX ? 4096 : (buffer_range.size / 16);
+            }
+#endif // GEOMETRY_SHADER_SUPPORT
             if ((stages & reshade::api::shader_stage::pixel) != 0)
             {
                cmd_list_data.original_constant_buffers[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer;
-               // Divide both by 16 as ReShade multiplies it by 16
                cmd_list_data.original_constant_buffers_first_constant[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer_range.offset / 16;
-               // Fallback to 4096 if not specified as it's the max allowed (it doesn't matter what's the actual buffer size, nor, apparently, what the first offset is)
                cmd_list_data.original_constant_buffers_num_constant[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer_range.size == UINT64_MAX ? 4096 : (buffer_range.size / 16);
+            }
+            if ((stages & reshade::api::shader_stage::compute) != 0)
+            {
+               cmd_list_data.original_constant_buffers[(size_t)Shader::Stage::Compute][update.binding + i] = buffer;
+               cmd_list_data.original_constant_buffers_first_constant[(size_t)Shader::Stage::Compute][update.binding + i] = buffer_range.offset / 16;
+               cmd_list_data.original_constant_buffers_num_constant[(size_t)Shader::Stage::Compute][update.binding + i] = buffer_range.size == UINT64_MAX ? 4096 : (buffer_range.size / 16);
             }
 #endif // ENABLE_AUTO_CBUFFER_RESTORATION
          }
