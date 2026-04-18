@@ -79,7 +79,7 @@
 #ifndef GEOMETRY_SHADER_SUPPORT
 #define GEOMETRY_SHADER_SUPPORT 0
 #endif // GEOMETRY_SHADER_SUPPORT
-// Not used by mod engines (e.g. Prey)
+// Not used by most engines (e.g. Prey)
 #ifndef ENABLE_SHADER_CLASS_INSTANCES
 #define ENABLE_SHADER_CLASS_INSTANCES 0
 #endif // ENABLE_SHADER_CLASS_INSTANCES
@@ -127,6 +127,18 @@
 #ifndef CHECK_GRAPHICS_API_COMPATIBILITY
 #define CHECK_GRAPHICS_API_COMPATIBILITY 0
 #endif // CHECK_GRAPHICS_API_COMPATIBILITY
+#ifndef ENABLE_DRAW_DISPATCH_DATA_CACHE
+#define ENABLE_DRAW_DISPATCH_DATA_CACHE 0
+#endif // ENABLE_DRAW_DISPATCH_DATA_CACHE
+#ifndef ENABLE_AUTO_CBUFFER_RESTORATION
+#define ENABLE_AUTO_CBUFFER_RESTORATION 0
+#endif // ENABLE_AUTO_CBUFFER_RESTORATION
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+// Force enable "ENABLE_POST_DRAW_DISPATCH_CALLBACK" as it's necessary for compatibility
+#undef ENABLE_POST_DRAW_DISPATCH_CALLBACK
+#define ENABLE_POST_DRAW_DISPATCH_CALLBACK 1
+#endif // ENABLE_AUTO_CBUFFER_RESTORATION
 
 #ifdef ENABLE_POST_DRAW_CALLBACK
 #error Rename "ENABLE_POST_DRAW_CALLBACK" to "ENABLE_POST_DRAW_DISPATCH_CALLBACK"
@@ -4503,7 +4515,7 @@ namespace
 
       auto SetConstantBuffer = [&](uint32_t slot, ID3D11Buffer* const buffer)
          {
-#if DEVELOPMENT
+#if DEVELOPMENT && !ENABLE_AUTO_CBUFFER_RESTORATION
             if (do_safety_checks)
             {
                bool failed = false;
@@ -4536,14 +4548,7 @@ namespace
             }
 #endif
 
-            if ((stages & reshade::api::shader_stage::vertex) == reshade::api::shader_stage::vertex)
-               native_device_context->VSSetConstantBuffers(slot, 1, &buffer);
-            if ((stages & reshade::api::shader_stage::geometry) == reshade::api::shader_stage::geometry)
-               native_device_context->GSSetConstantBuffers(slot, 1, &buffer);
-            if ((stages & reshade::api::shader_stage::pixel) == reshade::api::shader_stage::pixel)
-               native_device_context->PSSetConstantBuffers(slot, 1, &buffer);
-            if ((stages & reshade::api::shader_stage::compute) == reshade::api::shader_stage::compute)
-               native_device_context->CSSetConstantBuffers(slot, 1, &buffer);
+            CommandListData::SetConstantBuffers(native_device_context, stages, slot, buffer);
          };
 
       // Most games (e.g. Prey, Dishonored 2) doesn't ever use these buffer slots, so it's fine to re-apply them once per frame if they didn't change.
@@ -4647,6 +4652,10 @@ namespace
 
       CommandListData& cmd_list_data = *cmd_list->create_private_data<CommandListData>();
 
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      cmd_list_data.ClearOriginalConstantBuffers();
+#endif
+
       com_ptr<ID3D11DeviceContext> native_device_context;
       ID3D11DeviceChild* device_child = reinterpret_cast<ID3D11DeviceChild*>(cmd_list->get_native()); // This could either be a "ID3D11CommandList" or a "ID3D11DeviceContext"
       HRESULT hr = device_child->QueryInterface(&native_device_context);
@@ -4714,6 +4723,9 @@ namespace
       cmd_list_data.pipeline_state_has_custom_compute_shader = false;
 
       cmd_list_data.ResetUpgradedViews();
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      cmd_list_data.ClearOriginalConstantBuffers();
+#endif
 
       if (!cmd_list_data.is_primary) // Always true
       {
@@ -5286,6 +5298,10 @@ namespace
             }
 
             draw_state_stack.Restore(native_device_context);
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION && 0 // Not needed for now, we already have "DrawStateStack" that should cover all cases
+            cmd_list_data.RestoreOriginalConstantBuffers(native_device_context);
+#endif // ENABLE_AUTO_CBUFFER_RESTORATION
          }
          else
          {
@@ -5367,7 +5383,7 @@ namespace
    // Return false to prevent the original draw call from running (e.g. if you replaced it or just want to skip it)
    // Most games (e.g. Prey, Dishonored 2) always draw in direct mode (as opposed to indirect), but uses different command lists on different threads (e.g. on Prey, that's almost only used for the shadow projection maps, in Dishonored 2, for almost every separate pass).
    // Usually there's a few compute shaders but most passes are "classic" pixel shaders.
-   bool OnDrawOrDispatch_Custom(reshade::api::command_list* cmd_list, bool is_dispatch /*= false*/, std::function<void()>* original_draw_dispatch_func = nullptr)
+   bool OnDrawOrDispatch_Custom(reshade::api::command_list* cmd_list, bool is_dispatch /*= false*/, bool& updated_cbuffers, std::function<void()>* original_draw_dispatch_func = nullptr)
    {
       auto* device = cmd_list->get_device();
       ID3D11Device* native_device = (ID3D11Device*)(device->get_native());
@@ -5378,7 +5394,6 @@ namespace
       reshade::api::shader_stage stages = reshade::api::shader_stage(0); // None
 
       bool is_custom_pass = false;
-      bool updated_cbuffers = false;
 
       CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
 
@@ -6132,8 +6147,8 @@ namespace
       original_draw_dispatch_func = &draw_lambda;
 #endif
 
-#if DEVELOPMENT
       CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+#if DEVELOPMENT
       DeviceData& device_data = *cmd_list->get_device()->get_private_data<DeviceData>();
 
       bool wants_debug_draw = debug_draw_shader_hash != 0 || debug_draw_pipeline != 0;
@@ -6181,8 +6196,9 @@ namespace
       last_draw_dispatch_data.first_vertex = first_vertex;
       last_draw_dispatch_data.first_instance = first_instance;
 #endif
+      bool updated_cbuffers = false;
       // TODO: add performance tracing around these
-      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, false, original_draw_dispatch_func);
+      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, false, updated_cbuffers, original_draw_dispatch_func);
 #if DEVELOPMENT
 #if 0 // TODO: We should do this manually when replacing each draw call, we don't know if it was replaced or cancelled here
       {
@@ -6279,12 +6295,12 @@ namespace
       }
 #endif
 
-#if ENABLE_POST_DRAW_DISPATCH_CALLBACK
-      if (!cancelled_or_replaced)
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      if (!cancelled_or_replaced && updated_cbuffers)
       {
          draw_lambda();
          cancelled_or_replaced = true;
-         OnDrawOrDispatch_Custom(cmd_list, false);
+         cmd_list_data.RestoreOriginalConstantBuffers(native_device_context);
       }
 #endif
 
@@ -6320,8 +6336,8 @@ namespace
       original_draw_dispatch_func = &draw_lambda;
 #endif
 
-#if DEVELOPMENT
       CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+#if DEVELOPMENT
       DeviceData& device_data = *cmd_list->get_device()->get_private_data<DeviceData>();
 
       bool wants_debug_draw = debug_draw_shader_hash != 0 || debug_draw_pipeline != 0;
@@ -6366,7 +6382,8 @@ namespace
 
       last_draw_dispatch_data.indexed = true;
 #endif
-      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, false, original_draw_dispatch_func);
+      bool updated_cbuffers = false;
+      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, false, updated_cbuffers, original_draw_dispatch_func);
 #if DEVELOPMENT
       // First run the draw call (don't delegate it to ReShade) and then copy its output
       if (wants_debug_draw)
@@ -6446,6 +6463,16 @@ namespace
          native_device_context->OMSetDepthStencilState(original_depth_stencil_state.get(), original_stencil_ref);
       }
 #endif
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      if (!cancelled_or_replaced && updated_cbuffers)
+      {
+         draw_lambda();
+         cancelled_or_replaced = true;
+         cmd_list_data.RestoreOriginalConstantBuffers(native_device_context);
+      }
+#endif
+
       return cancelled_or_replaced;
    }
 
@@ -6464,8 +6491,8 @@ namespace
       original_draw_dispatch_func = &draw_lambda;
 #endif
 
-#if DEVELOPMENT
       CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+#if DEVELOPMENT
       DeviceData& device_data = *cmd_list->get_device()->get_private_data<DeviceData>();
 
       bool wants_debug_draw = debug_draw_shader_hash != 0 || debug_draw_pipeline != 0;
@@ -6494,7 +6521,8 @@ namespace
       last_draw_dispatch_data = {};
       last_draw_dispatch_data.dispatch_count = uint3( group_count_x, group_count_y, group_count_z );
 #endif
-      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, true, original_draw_dispatch_func);
+      bool updated_cbuffers = false;
+      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, true, updated_cbuffers, original_draw_dispatch_func);
 #if DEVELOPMENT
       // First run the draw call (don't delegate it to ReShade) and then copy its output
       if (wants_debug_draw)
@@ -6552,6 +6580,16 @@ namespace
 
       cancelled_or_replaced |= HandlePipelineRedirections(native_device_context, device_data, cmd_list_data, true, draw_lambda);
 #endif
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      if (!cancelled_or_replaced && updated_cbuffers)
+      {
+         draw_lambda();
+         cancelled_or_replaced = true;
+         cmd_list_data.RestoreOriginalConstantBuffers(native_device_context);
+      }
+#endif
+
       return cancelled_or_replaced;
    }
 
@@ -6601,8 +6639,8 @@ namespace
       original_draw_dispatch_func = &draw_lambda;
 #endif
 
-#if DEVELOPMENT
       CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+#if DEVELOPMENT
       DeviceData& device_data = *cmd_list->get_device()->get_private_data<DeviceData>();
 
       const auto& original_shader_hashes = is_dispatch ? cmd_list_data.pipeline_state_original_compute_shader_hashes : cmd_list_data.pipeline_state_original_graphics_shader_hashes;
@@ -6661,7 +6699,8 @@ namespace
       last_draw_dispatch_data.indirect = true;
       last_draw_dispatch_data.indexed = type == reshade::api::indirect_command::draw_indexed;
 #endif
-      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, is_dispatch, original_draw_dispatch_func);
+      bool updated_cbuffers = false;
+      bool cancelled_or_replaced = OnDrawOrDispatch_Custom(cmd_list, is_dispatch, updated_cbuffers, original_draw_dispatch_func);
 #if DEVELOPMENT
       if (wants_debug_draw)
       {
@@ -6760,6 +6799,16 @@ namespace
          native_device_context->OMSetDepthStencilState(original_depth_stencil_state.get(), original_stencil_ref);
       }
 #endif
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+      if (!cancelled_or_replaced && updated_cbuffers)
+      {
+         draw_lambda();
+         cancelled_or_replaced = true;
+         cmd_list_data.RestoreOriginalConstantBuffers(native_device_context);
+      }
+#endif
+
       return cancelled_or_replaced;
    }
 
@@ -7913,7 +7962,6 @@ namespace
          }
          break;
       }
-#if DEVELOPMENT
       case reshade::api::descriptor_type::constant_buffer:
       {
          for (uint32_t i = 0; i < update.count; i++)
@@ -7921,6 +7969,7 @@ namespace
             const reshade::api::buffer_range& buffer_range = static_cast<const reshade::api::buffer_range*>(update.descriptors)[i];
             ID3D11Buffer* buffer = reinterpret_cast<ID3D11Buffer*>(buffer_range.buffer.handle);
 
+#if DEVELOPMENT
             const std::shared_lock lock_trace(s_mutex_trace);
             if (trace_running)
             {
@@ -7933,9 +7982,21 @@ namespace
                GetResourceInfo(buffer, trace_draw_call_data.sr_size[0], trace_draw_call_data.sr_format[0], &trace_draw_call_data.sr_type_name[0], &trace_draw_call_data.sr_hash[0]);
                cmd_list_data.trace_draw_calls_data.push_back(trace_draw_call_data);
             }
+#endif
+
+#if ENABLE_AUTO_CBUFFER_RESTORATION
+            CommandListData& cmd_list_data = *cmd_list->get_private_data<CommandListData>();
+            if ((stages & reshade::api::shader_stage::pixel) != 0)
+            {
+               cmd_list_data.original_constant_buffers[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer;
+               // Divide both by 16 as ReShade multiplies it by 16
+               cmd_list_data.original_constant_buffers_first_constant[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer_range.offset / 16;
+               // Fallback to 4096 if not specified as it's the max allowed (it doesn't matter what's the actual buffer size, nor, apparently, what the first offset is)
+               cmd_list_data.original_constant_buffers_num_constant[(size_t)Shader::Stage::Pixel][update.binding + i] = buffer_range.size == UINT64_MAX ? 4096 : (buffer_range.size / 16);
+            }
+#endif // ENABLE_AUTO_CBUFFER_RESTORATION
          }
       }
-#endif
       case reshade::api::descriptor_type::sampler:
       {
          if (!enable_samplers_upgrade || ignore_upgraded_samplers)

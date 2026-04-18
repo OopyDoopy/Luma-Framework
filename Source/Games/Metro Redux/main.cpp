@@ -8,6 +8,9 @@
 
 #define AVOID_INPUT_LOSS 1
 
+// Needed because the game exclusively set CBuffers once on boot, and uses all of them!
+#define ENABLE_AUTO_CBUFFER_RESTORATION 1
+
 #include "..\..\Core\core.hpp"
 
 class MetroRedux final : public Game
@@ -54,6 +57,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       };
       // ### Check these if textures are not upgraded ###
       texture_format_upgrades_2d_size_filters = 0 | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainResolution | (uint32_t)TextureFormatUpgrades2DSizeFilters::SwapchainAspectRatio;
+
+      force_borderless = true; // These games have very bad window managment, we might need to force windowed mode and then reroute it as borderless
+      force_ignore_dpi = true; // Not sure whether it makes a difference, but shouldn't hurt
 
       game = new MetroRedux();
    }
