@@ -1,8 +1,12 @@
 #define GAME_GENERIC 1
 
+#define DISABLE_AUTO_DEBUGGER 1
+
 #define DISABLE_FOCUS_LOSS_SUPPRESSION 1
 
 #define CHECK_GRAPHICS_API_COMPATIBILITY 1
+
+#define AVOID_INPUT_LOSS 1
 
 #include "..\..\Core\core.hpp"
 

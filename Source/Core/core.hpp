@@ -216,6 +216,7 @@ extern "C" __declspec(dllexport) const char* WEBSITE = &Globals::WEBSITE[0];
 // Make sure we can use com_ptr as c arrays of pointers
 static_assert(sizeof(com_ptr<ID3D11Resource>) == sizeof(void*));
 
+using namespace Luma;
 using namespace Shader;
 using namespace Math;
 
@@ -2677,6 +2678,8 @@ namespace
    {
       SKIP_UNSUPPORTED_DEVICE_API(swapchain->get_device()->get_api());
 
+      OverlayLog::PauseMessages(); // Pause messages until the swapchain has finished resizing, it might take a while
+
       IDXGISwapChain* native_swapchain = (IDXGISwapChain*)(swapchain->get_native());
 #if 0
       DXGI_SWAP_CHAIN_DESC desc;
@@ -2923,7 +2926,7 @@ namespace
          if (device_data.output_resolution.x != 1)
 #endif
          {
-            MessageBoxA(game_window, "Your current game output resolution has an aspect ratio of 1:1 (a squared resolution), that might cause issues with texture upgrades by aspect ratio, given that shadow maps and other things are often rendered in squared textures.", NAME, MB_SETFOREGROUND);
+            ADD_OVERLAY_WARNING("Your current game output resolution has an aspect ratio of 1:1 (a squared resolution), that might cause issues with texture upgrades by aspect ratio, given that shadow maps and other things are often rendered in squared textures.");
          }
       }
 
@@ -9491,9 +9494,15 @@ namespace
       return edited;
    }
 
+   void OnRegisterMessagesOverlay(reshade::api::effect_runtime* runtime)
+   {
+      OverlayLog::UnpauseMessages();
+      OverlayLog::Render();
+   }
+
    // @see https://pthom.github.io/imgui_manual_online/manual/imgui_manual.html
    // This runs within the swapchain "Present()" function, and thus it's thread safe
-   void OnRegisterOverlay(reshade::api::effect_runtime* runtime)
+   void OnRegisterMainOverlay(reshade::api::effect_runtime* runtime)
    {
       SKIP_UNSUPPORTED_DEVICE_API(runtime->get_device()->get_api());
 
@@ -14793,8 +14802,9 @@ BOOL APIENTRY CoreMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved)
 #if !DEVELOPMENT && !TEST
       if (Globals::DEVELOPMENT_STATE == Globals::ModDevelopmentState::NonFunctional || Globals::DEVELOPMENT_STATE == Globals::ModDevelopmentState::WorkInProgress)
       {
-         const std::string warn_message = "You are playing a mod that is either non functional or non finished. Proceed at your own risk.\nReporting issues is generally not necessary unless you were asked for testing.";
-         MessageBoxA(NULL, warn_message.c_str(), NAME, MB_SETFOREGROUND);
+         OverlayLog::AddMessage(Globals::DEVELOPMENT_STATE == Globals::ModDevelopmentState::NonFunctional ? OverlayLog::LogLevel::Error : OverlayLog::LogLevel::Warning,
+            "You are playing a mod that is either non functional or non finished. Proceed at your own risk.\nReporting issues is generally not necessary unless you were asked for testing.",
+            10.f);
 		}
 #endif
 
@@ -14902,7 +14912,10 @@ BOOL APIENTRY CoreMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved)
       reshade::register_event<reshade::addon_event::reshade_reloaded_effects>(OnReShadeReloadedEffects);
 #endif // DEVELOPMENT
 
-      reshade::register_overlay(NAME, OnRegisterOverlay);
+      reshade::register_overlay(NAME, OnRegisterMainOverlay);
+
+      OverlayLog::PauseMessages(); // Pause until we draw for at least one frame, otherwise messages time elapses
+      reshade::register_overlay("OSD", OnRegisterMessagesOverlay);
 
       break;
    }
@@ -15018,8 +15031,10 @@ BOOL APIENTRY CoreMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved)
       reshade::unregister_event<reshade::addon_event::reshade_set_effects_state>(OnReShadeSetEffectsState);
       reshade::unregister_event<reshade::addon_event::reshade_reloaded_effects>(OnReShadeReloadedEffects);
 #endif // DEVELOPMENT
+      
+      reshade::unregister_overlay(NAME, OnRegisterMessagesOverlay);
 
-      reshade::unregister_overlay(NAME, OnRegisterOverlay);
+      reshade::unregister_overlay(NAME, OnRegisterMainOverlay);
 
       reshade::unregister_addon(h_module);
 
