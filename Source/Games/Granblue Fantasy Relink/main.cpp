@@ -3,6 +3,7 @@
 #define ENABLE_NGX 1
 #define ENABLE_FIDELITY_SK 1
 #define JITTER_PHASES 8
+#define PATCH_JITTER_TABLE_INIT
 #define PATCH_SCENE_BUFFER 0
 #define ENABLE_POST_DRAW_CALLBACK 1
 
@@ -61,12 +62,6 @@ public:
       };
       shader_defines_data.append_range(game_shader_defines_data);
       GetShaderDefineData(UI_DRAW_TYPE_HASH).SetDefaultValue('2');
-
-#if PATCH_SCENE_BUFFER
-      native_shaders_definitions.emplace(
-         CompileTimeStringHash("GBFR Patch SceneBuffer"),
-         ShaderDefinition{"Luma_GBFR_PatchSceneBuffer", reshade::api::pipeline_subobject_type::compute_shader});
-#endif
 
       native_shaders_definitions.emplace(
          CompileTimeStringHash("GBFR Post Tonemap"),
@@ -136,6 +131,15 @@ public:
 
       bool tonemap_after_taa = *GetShaderDefineData(char_ptr_crc32("TONEMAP_AFTER_TAA")).compiled_data.GetValue() != '0';
 
+      if (original_shader_hashes.Contains(shader_hashes_Bloom))
+      {
+         ComPtr<ID3D11ShaderResourceView> ps_depth_srv;
+         native_device_context->PSGetShaderResources(25, 1, ps_depth_srv.put());
+         if (ps_depth_srv)
+         {
+            ps_depth_srv->GetResource(game_device_data.depth_buffer.put());
+         }
+      }
       // Since MotionBlur runs before TAA the game runs a smaller AA to dejitter the motion blur input
       // when we reorder the post process effects this is no longer needed and we can use the antialiased output from TAA/SR.
       if (original_shader_hashes.Contains(shader_hashes_MotionBlurDenoise) && tonemap_after_taa)
@@ -257,13 +261,6 @@ public:
                return DrawOrDispatchOverrideType::Skip;
             }
          }
-
-         ComPtr<ID3D11ShaderResourceView> cs_depth_srv;
-         native_device_context->CSGetShaderResources(2, 1, cs_depth_srv.put());
-         if (cs_depth_srv)
-         {
-            cs_depth_srv->GetResource(game_device_data.depth_buffer.put());
-         }
          return DrawOrDispatchOverrideType::None;
       }
 
@@ -278,17 +275,6 @@ public:
          {
             override_type = [](GameDeviceDataGBFR& game_device_data, ID3D11Device* native_device, ID3D11DeviceContext* native_device_context, DeviceData& device_data, CommandListData& cmd_list_data) -> DrawOrDispatchOverrideType
             {
-#if PATCH_SCENE_BUFFER
-               if (!game_device_data.scene_buffer_info_collected.load(std::memory_order_acquire))
-               {
-                  device_data.force_reset_sr = true;
-#if TEST || DEVELOPMENT
-                  LogExpectedCustomDrawSkipped("SR (TAA path)", "force_reset_sr set: scene_buffer_info not collected yet");
-#endif
-                  return DrawOrDispatchOverrideType::None;
-               }
-#endif
-
                if (!ExtractTAAShaderResources(native_device_context, game_device_data))
                {
                   ASSERT_ONCE_MSG(false, "ExtractTAAShaderResources: t3 (source color) or t23 (motion vectors) SRV not bound");
@@ -476,14 +462,33 @@ public:
       }
 
       // UI phase detection and redirect to output-resolution texture.
-      if (DetectUIPhase(device_data, native_device_context))
+      // Skipped at render_scale == 1 — no upscaling means no compositing needed.
+      if (render_scale != 1.f && !IsTAARunningThisFrame() && DetectUIPhase(device_data, native_device_context, original_shader_hashes))
       {
          RedirectUIDrawToScaledTarget(native_device_context, device_data, game_device_data);
       }
 
-      if (original_shader_hashes.Contains(shader_hashes_Output))
+      // Capture the Output shader state for replay in the immediate context.
+      // Always intercepted at render_scale != 1 — the decision of whether to composite
+      // UI onto the output (or draw as recorded) is made in ReplayOutputDraw, where DC_UI
+      // is guaranteed complete and ui_phase_seen_this_frame is safe to read.
+      if (original_shader_hashes.Contains(shader_hashes_Output) && render_scale != 1.f && !IsTAARunningThisFrame())
       {
-         HandleOutputShaderForUIScale(native_device_context, native_device, device_data, game_device_data);
+         CaptureOutputReplayState(native_device_context, game_device_data.ui_scale.output_replay_state);
+
+         // Unbind scaled_texture_rtv before sealing the command list.  If it remains bound as
+         // RTV inside the partial command list, D3D11 silently nulls the SRV binding when we
+         // try to read scaled_texture in ReplayOutputDraw (same-resource RTV/SRV hazard).
+         if (game_device_data.ui_scale.ui_scaled_needed)
+         {
+            ID3D11RenderTargetView* null_rtv = nullptr;
+            native_device_context->OMSetRenderTargets(1, &null_rtv, nullptr);
+         }
+
+         game_device_data.ui_scale.output_device_context.store(native_device_context, std::memory_order_release);
+         game_device_data.ui_scale.output_pending.store(true, std::memory_order_release);
+         native_device_context->FinishCommandList(TRUE, game_device_data.ui_scale.output_partial_command_list.put());
+         return DrawOrDispatchOverrideType::Skip;
       }
       return DrawOrDispatchOverrideType::None;
    }
@@ -511,10 +516,10 @@ public:
       const bool is_finish_command_list = source_deferred_ctx != nullptr;
       if (is_finish_command_list)
       {
-         const ID3D11DeviceContext* ui_ctx = game_device_data.ui_detected_context.load(std::memory_order_acquire);
+         const ID3D11DeviceContext* ui_ctx = game_device_data.ui_scale.ui_detected_context.load(std::memory_order_acquire);
          if (native_cmd_list && ui_ctx != nullptr && source_deferred_ctx.get() == ui_ctx)
          {
-            game_device_data.ui_finish_command_list.store(native_cmd_list.get(), std::memory_order_release);
+            game_device_data.ui_scale.ui_finish_command_list.store(native_cmd_list.get(), std::memory_order_release);
          }
       }
 
@@ -525,41 +530,28 @@ public:
          // (Map/Unmap already happened on the immediate context at start of frame).
          ComPtr<ID3D11CommandList> native_command_list;
          native_command_list = secondary_native_cmd_list;
-         if (native_command_list)
-         {
-#if PATCH_SCENE_BUFFER
-            if (!game_device_data.scene_buffer_patched_this_frame.load(std::memory_order_relaxed) &&
-                game_device_data.scene_buffer_info_collected.load(std::memory_order_acquire))
-            {
-               std::set<UINT> offsets_to_patch;
-               {
-                  std::lock_guard<std::mutex> lock(game_device_data.scene_buffer_bindings_mutex);
-                  offsets_to_patch = game_device_data.scene_buffer_offsets_this_frame;
-               }
-               if (!offsets_to_patch.empty())
-               {
-                  game_device_data.scene_buffer_patched_this_frame.store(true, std::memory_order_release);
-                  ComPtr<ID3D11DeviceContext1> immediate_context1;
-                  if (SUCCEEDED(native_device_context->QueryInterface(immediate_context1.put())))
-                  {
-                     for (UINT offset : offsets_to_patch)
-                     {
-                        PatchSceneBufferInHook(
-                           immediate_context1.get(),
-                           game_device_data.pending_scene_buffer,
-                           offset,
-                           game_device_data.pending_num_constants);
-                     }
-                  }
-               }
-            }
-#endif
-         }
 
          if (native_command_list &&
-             native_command_list.get() == game_device_data.ui_finish_command_list.load(std::memory_order_acquire))
+             native_command_list.get() == game_device_data.ui_scale.ui_finish_command_list.load(std::memory_order_acquire))
          {
             device_data.has_drawn_main_post_processing = true;
+         }
+
+         if (
+            native_command_list.get() == game_device_data.ui_scale.output_remainder_command_list.load(std::memory_order_acquire) &&
+            game_device_data.ui_scale.output_pending.load(std::memory_order_acquire))
+         {
+            // Unlikely to be needed this is the last shader to run
+            // DrawStateStack<DrawStateStackType::FullGraphics> ui_output_state_stack;
+            // ui_output_state_stack.Cache(native_device_context.get(), device_data.uav_max_count);
+            if (game_device_data.ui_scale.output_partial_command_list)
+            {
+               native_device_context->ExecuteCommandList(game_device_data.ui_scale.output_partial_command_list.get(), FALSE);
+               game_device_data.ui_scale.output_partial_command_list.reset();
+            }
+            ReplayOutputDraw(native_device_context.get(), game_device_data);
+            game_device_data.ui_scale.output_pending.store(false, std::memory_order_release);
+            // ui_output_state_stack.Restore(native_device_context.get());
          }
 
          if (native_command_list.get() == game_device_data.remainder_command_list.load(std::memory_order_acquire) && game_device_data.partial_command_list.get() != nullptr)
@@ -573,7 +565,11 @@ public:
                // been replayed the game must have written the current-frame projection jitter.
 
                game_device_data.prev_table_jitter = game_device_data.table_jitter;
+#ifdef PATCH_JITTER_TABLE_INIT
+               TryReadTableJitterFromCounter(game_device_data.table_jitter);
+#else
                TryReadTableJitter(game_device_data.table_jitter);
+#endif
 #if TEST || DEVELOPMENT
                game_device_data.prev_jitter = game_device_data.jitter;
                TryReadCameraJitter(game_device_data.jitter);
@@ -1150,6 +1146,10 @@ public:
             {
                game_device_data.remainder_command_list.store(finish_command_list.get(), std::memory_order_release);
             }
+            if (deferred_ctx.get() == game_device_data.ui_scale.output_device_context.load(std::memory_order_acquire))
+            {
+               game_device_data.ui_scale.output_remainder_command_list.store(finish_command_list.get(), std::memory_order_release);
+            }
          }
       }
    }
@@ -1157,33 +1157,6 @@ public:
    void OnInitDevice(ID3D11Device* native_device, DeviceData& device_data) override
    {
       auto& game_device_data = GetGameDeviceData(device_data);
-
-#if PATCH_SCENE_BUFFER
-      {
-         D3D11_BUFFER_DESC bd = {};
-         bd.ByteWidth = CBSceneBuffer_size;
-         bd.Usage = D3D11_USAGE_DEFAULT;
-         bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-         bd.CPUAccessFlags = 0;
-         bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-         bd.StructureByteStride = CBSceneBuffer_size;
-         HRESULT hr = native_device->CreateBuffer(&bd, nullptr, game_device_data.scratch_scene_buffer.put());
-         ASSERT_ONCE(SUCCEEDED(hr));
-      }
-
-      if (game_device_data.scratch_scene_buffer)
-      {
-         D3D11_UNORDERED_ACCESS_VIEW_DESC uavd = {};
-         uavd.Format = DXGI_FORMAT_UNKNOWN; // Required for structured buffers
-         uavd.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-         uavd.Buffer.FirstElement = 0;
-         uavd.Buffer.Flags = 0;
-         uavd.Buffer.NumElements = 1;
-         HRESULT hr = native_device->CreateUnorderedAccessView(
-            game_device_data.scratch_scene_buffer.get(), &uavd, game_device_data.scratch_scene_buffer_uav.put());
-         ASSERT_ONCE(SUCCEEDED(hr));
-      }
-#endif
    }
 
    void OnInitSwapchain(reshade::api::swapchain* swapchain) override
@@ -1242,6 +1215,19 @@ public:
 
       PatchJitterPhases();
 
+#ifdef PATCH_JITTER_TABLE_INIT
+      if (!g_taa_init_hook)
+      {
+         const uintptr_t base_addr = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
+         if (base_addr != 0)
+         {
+            g_taa_init_hook = safetyhook::create_inline(
+               reinterpret_cast<void*>(base_addr + kTemporalAntiAliasingComponent_Init_RVA),
+               reinterpret_cast<void*>(&Hooked_TemporalAntiAliasingComponentInit));
+         }
+      }
+#endif
+
       if (!g_jitter_write_hook)
       {
          const uintptr_t base_addr = reinterpret_cast<uintptr_t>(GetModuleHandleA(NULL));
@@ -1252,43 +1238,6 @@ public:
                &OnJitterWrite);
          }
       }
-
-#if PATCH_SCENE_BUFFER
-      ComPtr<ID3D11DeviceContext> immediate_context;
-      native_device->GetImmediateContext(immediate_context.put());
-
-      ComPtr<ID3D11DeviceContext1> immediate_context1;
-      if (SUCCEEDED(immediate_context->QueryInterface(immediate_context1.put())))
-      {
-         void* immediate_fn = GetVTableFunction(immediate_context1.get(), kVSSetConstantBuffers1_VTableIndex);
-
-         if (!g_VSSetConstantBuffers1_hook_immediate)
-         {
-            g_VSSetConstantBuffers1_hook_immediate = safetyhook::create_inline(
-               immediate_fn,
-               reinterpret_cast<void*>(&Hooked_VSSetConstantBuffers1_Immediate));
-         }
-
-         // Check if the deferred context uses a different function implementation;
-         // if so, install a second inline hook for it.
-         ComPtr<ID3D11DeviceContext> deferred_context;
-         if (SUCCEEDED(native_device->CreateDeferredContext(0, deferred_context.put())))
-         {
-            ComPtr<ID3D11DeviceContext1> deferred_context1;
-            if (SUCCEEDED(deferred_context->QueryInterface(deferred_context1.put())))
-            {
-               void* deferred_fn = GetVTableFunction(deferred_context1.get(), kVSSetConstantBuffers1_VTableIndex);
-
-               if (deferred_fn != immediate_fn && !g_VSSetConstantBuffers1_hook_deferred)
-               {
-                  g_VSSetConstantBuffers1_hook_deferred = safetyhook::create_inline(
-                     deferred_fn,
-                     reinterpret_cast<void*>(&Hooked_VSSetConstantBuffers1_Deferred));
-               }
-            }
-         }
-      }
-#endif
    }
 
    void OnPresent(ID3D11Device* native_device, DeviceData& device_data) override
@@ -1351,8 +1300,8 @@ public:
       }
       device_data.has_drawn_sr = false;
       game_device_data.tonemap_detected_context.store(nullptr, std::memory_order_relaxed);
-      game_device_data.ui_detected_context.store(nullptr, std::memory_order_relaxed);
-      game_device_data.ui_finish_command_list.store(nullptr, std::memory_order_relaxed);
+      game_device_data.ui_scale.ui_detected_context.store(nullptr, std::memory_order_relaxed);
+      game_device_data.ui_scale.ui_finish_command_list.store(nullptr, std::memory_order_relaxed);
       game_device_data.ui_scale.ResetPerFrame();
       device_data.ui_initial_original_rtv = nullptr;
 #if TEST || DEVELOPMENT
@@ -2009,6 +1958,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       shader_hashes_CutsceneOverlayModulate.pixel_shaders.emplace(std::stoul("B9AFD904", nullptr, 16));
       shader_hashes_CutsceneOverlayModulate.vertex_shaders.emplace(std::stoul("4741FB87", nullptr, 16));
       shader_hashes_Output.pixel_shaders.emplace(std::stoul("F55707D4", nullptr, 16));
+      shader_hashes_Bloom.pixel_shaders.emplace(std::stoul("1C5F92B9", nullptr, 16));
+      shader_hashes_UIBackgroundDownscale.pixel_shaders.emplace(std::stoul("C4013554", nullptr, 16));
 
       swapchain_format_upgrade_type = TextureFormatUpgradesType::AllowedEnabled;
       swapchain_upgrade_type = SwapchainUpgradeType::scRGB;
@@ -2035,6 +1986,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       forced_shader_names.emplace(std::stoul("B9AFD904", nullptr, 16), "Cutscene Overlay Modulate");
       forced_shader_names.emplace(std::stoul("4517077B", nullptr, 16), "Cutscene Overlay Blend");
       forced_shader_names.emplace(std::stoul("F55707D4", nullptr, 16), "Output");
+      forced_shader_names.emplace(std::stoul("1C5F92B9", nullptr, 16), "Bloom");
+      forced_shader_names.emplace(std::stoul("C4013554", nullptr, 16), "UI Background Downscale");
 #endif
       // enable_samplers_upgrade = true;
       // ui_separation.enable = true;
