@@ -2,7 +2,7 @@
 
 #define GEOMETRY_SHADER_SUPPORT 0
 #define ALLOW_SHADERS_DUMPING 0
-// #define ENABLE_POST_DRAW_CALLBACK 0
+// #define ENABLE_POST_DRAW_DISPATCH_CALLBACK 0
 
 #include "..\..\Core\core.hpp"
 

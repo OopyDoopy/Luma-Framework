@@ -1,5 +1,7 @@
 #define GAME_GENERIC 1
 
+#define DISABLE_FOCUS_LOSS_SUPPRESSION 1
+
 #define CHECK_GRAPHICS_API_COMPATIBILITY 1
 
 #include "..\..\Core\core.hpp"
@@ -129,7 +131,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       const char* game_name = use_custom_game_name ? file_name.c_str() : cleared_project_name; // Can include spaces!
       std::string mod_description = "Generic Luma mod";
       if (use_custom_game_name)
+      {
+         sub_game_shaders_appendix = file_name;
          mod_description += " for " + file_name;
+      }
+      else
+      {
+         sub_game_shaders_appendix = System::GetProcessExecutableName();
+      }
 
       uint32_t mod_version = 1;
       Globals::SetGlobals(game_name, mod_description.c_str(), "https://github.com/Filoppi/Luma-Framework/", mod_version);

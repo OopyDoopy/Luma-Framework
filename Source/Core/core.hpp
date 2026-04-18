@@ -115,9 +115,9 @@
 #ifndef ENABLE_ORIGINAL_SHADERS_MEMORY_EDITS
 #define ENABLE_ORIGINAL_SHADERS_MEMORY_EDITS 0
 #endif // ENABLE_ORIGINAL_SHADERS_MEMORY_EDITS
-#ifndef ENABLE_POST_DRAW_CALLBACK
-#define ENABLE_POST_DRAW_CALLBACK 0
-#endif // ENABLE_POST_DRAW_CALLBACK
+#ifndef ENABLE_POST_DRAW_DISPATCH_CALLBACK
+#define ENABLE_POST_DRAW_DISPATCH_CALLBACK 0
+#endif // ENABLE_POST_DRAW_DISPATCH_CALLBACK
 #ifndef ENABLE_DRAW_DISPATCH_DATA_CACHE
 #define ENABLE_DRAW_DISPATCH_DATA_CACHE 0
 #endif // ENABLE_DRAW_DISPATCH_DATA_CACHE
@@ -127,6 +127,10 @@
 #ifndef CHECK_GRAPHICS_API_COMPATIBILITY
 #define CHECK_GRAPHICS_API_COMPATIBILITY 0
 #endif // CHECK_GRAPHICS_API_COMPATIBILITY
+
+#ifdef ENABLE_POST_DRAW_CALLBACK
+#error Rename "ENABLE_POST_DRAW_CALLBACK" to "ENABLE_POST_DRAW_DISPATCH_CALLBACK"
+#endif
 
 #if DX12
 constexpr bool OneShaderPerPipeline = false;
@@ -3827,7 +3831,7 @@ namespace
                         const std::regex pattern_cbs(R"(dcl_constantbuffer.*[cC][bB]([0-9]{1,2}))");
                         const std::regex pattern_samplers(R"(dcl_sampler.*[sS]([0-9]{1,2}))");
                         const std::regex pattern_srv(R"(.*dcl_resource_texture.*[tT]([0-9]{1,3})$)"); // In DX9 these are "dcl_2d s0" etc, sampler+srv together
-                        const std::regex pattern_uav(R"(.*dcl_uav_.*[uU]([0-9]{1,2})$)"); // TODO: verify that all the UAV binding types have incremental numbers, or whether they grow in parallel
+                        const std::regex pattern_uav(R"(.*dcl_uav_.*[uU]([0-9]{1,2})$)"); // Could be "rov" too! // TODO: verify that all the UAV binding types have incremental numbers, or whether they grow in parallel
                         const std::regex pattern_rtv(R"(dcl_output.*[oO]([0-9]{1,1}))"); // Match up to 9 even if theoretically "D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT" is up to 7
                         const std::regex pattern_depth(R"(dcl_output_depth)");
                         const std::regex pattern_sm(R"(\b(ps|vs|gs|hs|ds|cs)_(\d+)_(\d+)\s*$)", std::regex_constants::icase); // e.g. ps_5_0
@@ -6112,7 +6116,7 @@ namespace
       ID3D11DeviceContext* native_device_context = (ID3D11DeviceContext*)(cmd_list->get_native());
       std::function<void()>* original_draw_dispatch_func = nullptr;
 
-#if DEVELOPMENT || ENABLE_POST_DRAW_CALLBACK
+#if DEVELOPMENT || ENABLE_POST_DRAW_DISPATCH_CALLBACK
       std::function<void()> draw_lambda = [&]()
       {
          if (instance_count > 1)
@@ -6275,7 +6279,7 @@ namespace
       }
 #endif
 
-#if ENABLE_POST_DRAW_CALLBACK
+#if ENABLE_POST_DRAW_DISPATCH_CALLBACK
       if (!cancelled_or_replaced)
       {
          draw_lambda();
@@ -6300,7 +6304,7 @@ namespace
       ID3D11DeviceContext* native_device_context = (ID3D11DeviceContext*)(cmd_list->get_native());
       std::function<void()>* original_draw_dispatch_func = nullptr;
 
-#if DEVELOPMENT || ENABLE_POST_DRAW_CALLBACK
+#if DEVELOPMENT || ENABLE_POST_DRAW_DISPATCH_CALLBACK
       std::function<void()> draw_lambda = [&]()
       {
          if (instance_count > 1)
@@ -6452,7 +6456,7 @@ namespace
       ID3D11DeviceContext* native_device_context = (ID3D11DeviceContext*)(cmd_list->get_native());
       std::function<void()>* original_draw_dispatch_func = nullptr;
 
-#if DEVELOPMENT || ENABLE_POST_DRAW_CALLBACK
+#if DEVELOPMENT || ENABLE_POST_DRAW_DISPATCH_CALLBACK
       std::function<void()> draw_lambda = [&]()
       {
          native_device_context->Dispatch(group_count_x, group_count_y, group_count_z);
@@ -6571,7 +6575,7 @@ namespace
       ID3D11DeviceContext* native_device_context = (ID3D11DeviceContext*)(cmd_list->get_native());
       std::function<void()>* original_draw_dispatch_func = nullptr;
 
-#if DEVELOPMENT || ENABLE_POST_DRAW_CALLBACK
+#if DEVELOPMENT || ENABLE_POST_DRAW_DISPATCH_CALLBACK
       std::function<void()> draw_lambda = [&]()
       {
          // We only support one draw for now (it couldn't be otherwise in DX11)

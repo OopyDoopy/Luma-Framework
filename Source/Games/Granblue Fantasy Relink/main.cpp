@@ -5,7 +5,7 @@
 #define JITTER_PHASES 8
 #define PATCH_JITTER_TABLE_INIT
 #define PATCH_SCENE_BUFFER 0
-#define ENABLE_POST_DRAW_CALLBACK 1
+#define ENABLE_POST_DRAW_DISPATCH_CALLBACK 1
 
 #include <d3d11.h>
 #include "..\..\Core\core.hpp"
