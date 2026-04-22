@@ -6837,9 +6837,9 @@ namespace
          {
             desc.MipLODBias = std::clamp(desc.MipLODBias + device_data.texture_mip_lod_bias_offset, D3D11_MIP_LOD_BIAS_MIN, D3D11_MIP_LOD_BIAS_MAX); // Setting this out of range (~ +/- 16) will make DX11 crash
          }
-         else if (samplers_upgrade_mode == 3) // TODO: Remove once mip based effects in Persona 5 are fixed 
+         else if (samplers_upgrade_mode == 3) // Only change the offset when the original value is zero
          {
-             desc.MipLODBias = (desc.MipLODBias == 0.0f) ? desc.MipLODBias + device_data.texture_mip_lod_bias_offset : desc.MipLODBias;
+             desc.MipLODBias = (desc.MipLODBias == 0.0f) ? device_data.texture_mip_lod_bias_offset : desc.MipLODBias;
              desc.MipLODBias = std::clamp(desc.MipLODBias, D3D11_MIP_LOD_BIAS_MIN, D3D11_MIP_LOD_BIAS_MAX); // Setting this out of range (~ +/- 16) will make DX11 crash
          }
 
