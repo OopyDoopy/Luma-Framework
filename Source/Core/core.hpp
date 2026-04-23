@@ -10893,7 +10893,7 @@ namespace
                                           ImGui::Text("R Size: %ux%ux%ux%u", sr_size.x, sr_size.y, sr_size.z, sr_size.w);
                                           ImGui::Text("RV Mip: %u", draw_call_data.srv_mip[i]);
                                           ImGui::Text("RV Size: %ux%ux%u", srv_size.x, srv_size.y, srv_size.z);
-                                          ImGui::Text("R is RT: %s", sr_is_rt ? "True" : "False");
+                                          ImGui::Text("R is RT: %s", sr_is_rt ? "True" : "False"); // TODO: add if they have CPU access, or immutable etc
                                           ImGui::Text("R is UA: %s", sr_is_ua ? "True" : "False");
                                           bool upgraded = false;
                                           {
@@ -12976,7 +12976,7 @@ namespace
             }
 
 #if DEVELOPMENT
-            // Print warnings if the OS gamma wasn't neutral (we don't want that in HDR!). This is extremely slow in some games (e.g. Lego City Undercover) (probably because they set a value, even if neutral) so it's behind a toggle.
+            // Print warnings if the OS gamma wasn't neutral (we don't want that in HDR!). This check is extremely slow in some games (e.g. Lego City Undercover) (probably because they set a value, even if neutral) so it's behind a toggle.
             static bool check_gamma_ramp = false;
             ImGui::Checkbox("Check Gamma Ramp", &check_gamma_ramp);
             if (check_gamma_ramp)

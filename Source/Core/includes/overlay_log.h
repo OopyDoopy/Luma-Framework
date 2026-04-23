@@ -34,8 +34,8 @@ namespace Luma::OverlayLog
 	inline constexpr const char* g_dismiss_key_label = "END"; // Matches "g_dismiss_key"
 
 	// Settings:
-   inline bool show_messages = true;
-   inline std::atomic<bool> g_messages_paused = false;
+	inline bool show_messages = true;
+	inline std::atomic<bool> g_messages_paused = false;
 
 	enum class LogLevel : uint8_t
 	{
@@ -276,7 +276,7 @@ namespace Luma::OverlayLog
 				if (key_pressed_event)
 				{
 					messages_to_remove.push_back(message.id);
-               key_pressed_event = false;
+					key_pressed_event = false;
 				}
 			}
 
