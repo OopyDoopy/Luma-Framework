@@ -12667,6 +12667,8 @@ namespace
                {
                case 0: // NVSDK_NGX_DLSS_Hint_Render_Preset_Default
                   selected_dlss_preset = "Default"; break;
+               case 5: // NVSDK_NGX_DLSS_Hint_Render_Preset_E
+                  selected_dlss_preset = "E (CNN)"; break;
                case 6: // NVSDK_NGX_DLSS_Hint_Render_Preset_F
                   selected_dlss_preset = "F (CNN)"; break;
                case 10: // NVSDK_NGX_DLSS_Hint_Render_Preset_J
@@ -12701,7 +12703,8 @@ namespace
                   };
 
                   AddPresetItem("Default", 0, "Uses NVIDIA suggested preset."); // NVSDK_NGX_DLSS_Hint_Render_Preset_Default
-                  AddPresetItem("F (CNN)", 6, "Deprecated CNN model. It is more performant, but blurier than the newer models. It might offer less ghosting.");  // NVSDK_NGX_DLSS_Hint_Render_Preset_F
+                  AddPresetItem("E (CNN)", 5, "Deprecated CNN model. It is more performant, but blurrier than the newer models. Sharper than F but slightly more aliased."); // NVSDK_NGX_DLSS_Hint_Render_Preset_E
+                  AddPresetItem("F (CNN)", 6, "Deprecated CNN model. It is more performant, but blurrier than the newer models. It might offer less ghosting than J/K."); // NVSDK_NGX_DLSS_Hint_Render_Preset_F
                   AddPresetItem("J", 10, "Very similar to K. Has issues with reflections and transparent effects / volumetrics."); // NVSDK_NGX_DLSS_Hint_Render_Preset_J
                   AddPresetItem("K", 11, "Very similar to J. Has issues with reflections and transparent effects / volumetrics."); // NVSDK_NGX_DLSS_Hint_Render_Preset_K
                   AddPresetItem("L", 12, "Highest quality, but very performance intensive. Suggested when upscaling from very low resolution (Ultra Performance)."); // NVSDK_NGX_DLSS_Hint_Render_Preset_L

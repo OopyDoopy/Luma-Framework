@@ -263,16 +263,16 @@ namespace Luma::OverlayLog
 
 			ImGui::PushID(static_cast<int>(message.id));
 
-			ImGui::TextColored(GetLevelColor(message.level), "[%s]", GetLevelString(message.level));
-			ImGui::SameLine();
-			ImGui::TextWrapped("%s", message.text.c_str()); // TODO: color this too?
+			ImGui::PushStyleColor(ImGuiCol_Text, GetLevelColor(message.level));
+			ImGui::Text("%s: %s", GetLevelString(message.level), message.text.c_str());
+			ImGui::PopStyleColor();
 
 			// Only allow dismissing the newest message, if desired
 			const bool is_last_message = (i + 1 == messages_snapshot.size());
 			if (message.dismissible && is_last_message)
 			{
 				ImGui::SameLine();
-				ImGui::TextWrapped("[%s]", g_dismiss_key_label);
+				ImGui::Text(" [%s]", g_dismiss_key_label);
 				if (key_pressed_event)
 				{
 					messages_to_remove.push_back(message.id);
