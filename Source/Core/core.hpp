@@ -4446,7 +4446,7 @@ namespace
             if (device->create_resource_view({original_resource_to_mirrored_upgraded_resource_ptr}, usage, resource_view_desc, &mirrored_upgraded_resource_view))
             {
                std::unique_lock lock_device_write(device_data.mutex);
-               if (!device_data.original_resource_views_to_mirrored_upgraded_resource_views.contains(mirrored_upgraded_resource_view.handle))
+               if (!device_data.original_resource_views_to_mirrored_upgraded_resource_views.contains(in_rv))
                {
                   device_data.original_resource_views_to_mirrored_upgraded_resource_views[in_rv] = mirrored_upgraded_resource_view.handle;
                   out_rv = mirrored_upgraded_resource_view.handle;
@@ -5795,9 +5795,10 @@ namespace
                      UINT valid_render_target_views_bound = 0;
                      for (size_t i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
                      {
-                        if (rtvs[i].get() == nullptr)
+                        // Count until the last valid one (nullptr ones are allowed in the middle)
+                        if (rtvs[i].get() != nullptr)
                         {
-                           valid_render_target_views_bound++;
+                           valid_render_target_views_bound = i + 1;
                         }
                      }
 
