@@ -127,9 +127,6 @@
 #ifndef CHECK_GRAPHICS_API_COMPATIBILITY
 #define CHECK_GRAPHICS_API_COMPATIBILITY 0
 #endif // CHECK_GRAPHICS_API_COMPATIBILITY
-#ifndef ENABLE_DRAW_DISPATCH_DATA_CACHE
-#define ENABLE_DRAW_DISPATCH_DATA_CACHE 0
-#endif // ENABLE_DRAW_DISPATCH_DATA_CACHE
 #ifndef ENABLE_AUTO_CBUFFER_RESTORATION
 #define ENABLE_AUTO_CBUFFER_RESTORATION 0
 #endif // ENABLE_AUTO_CBUFFER_RESTORATION
@@ -1324,7 +1321,7 @@ namespace
                      std::string_view str_view(&str[i0], i - i0);
                      if (str_view.rfind("#define ", 0) == 0)
                      {
-                        str_view = str_view.substr(strlen("#define "));
+                        str_view = str_view.substr(strlen("#define ")); // TODO: this doesn't account for " #define" that have spaces before them? Etc
                         size_t space_index = str_view.find(' ');
                         if (space_index != std::string::npos)
                         {
@@ -5803,7 +5800,7 @@ namespace
                      }
 
                      ID3D11RenderTargetView* const* rtvs_const = (ID3D11RenderTargetView**)std::addressof(rtvs[0]);
-                     native_device_context->OMSetRenderTargetsAndUnorderedAccessViews(valid_render_target_views_bound, rtvs_const, dsv.get(), valid_render_target_views_bound, device_data.uav_max_count - valid_render_target_views_bound, uavs_const, nullptr);
+                     native_device_context->OMSetRenderTargetsAndUnorderedAccessViews(valid_render_target_views_bound, rtvs_const, dsv.get(), valid_render_target_views_bound, device_data.uav_max_count - valid_render_target_views_bound, uavs_const + valid_render_target_views_bound, nullptr);
                   }
                   else
                   {
@@ -13881,9 +13878,9 @@ namespace
                                        rtvs[i] = nullptr;
                                        rts_changed = true;
                                     }
-                                    display_composition_rtv = nullptr; // Note: we don't respect "force_create_swapchain_rtvs" here.
                                  }
                               }
+                              swapchain_data.display_composition_rtvs.clear(); // Note: we don't respect "force_create_swapchain_rtvs" here.
                               if (rts_changed)
                               {
                                  ID3D11RenderTargetView* const* rtvs_const = (ID3D11RenderTargetView**)std::addressof(rtvs[0]);
