@@ -264,6 +264,64 @@ public:
       game_device_data.prev_skin_buffer = std::make_unique<StretchyBuffer>(native_device, context.get(), 32 * 1024 * 1024);
    }
 
+   void SetupMotionVectorTexture(ID3D11Device* device, GameDeviceDataMetaphor& game_device_data, uint32_t width, uint32_t height)
+   {
+      if (width == 0 ||
+          height == 0)
+      {
+         return;
+      }
+      if (game_device_data.motion_vectors)
+      {
+         D3D11_TEXTURE2D_DESC mv_desc;
+         game_device_data.motion_vectors->GetDesc(&mv_desc);
+         if (mv_desc.Width == width &&
+             mv_desc.Height == height)
+         {
+            return;
+         }
+      }
+      {
+         D3D11_TEXTURE2D_DESC motion_vector_desc;
+         motion_vector_desc.Width = width;
+         motion_vector_desc.Height = height;
+         motion_vector_desc.Usage = D3D11_USAGE_DEFAULT;
+         motion_vector_desc.ArraySize = 1;
+         motion_vector_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+         motion_vector_desc.SampleDesc.Count = 1;
+         motion_vector_desc.SampleDesc.Quality = 0;
+         motion_vector_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+         motion_vector_desc.CPUAccessFlags = 0;
+         motion_vector_desc.MiscFlags = 0;
+         motion_vector_desc.MipLevels = 1;
+
+         device->CreateTexture2D(&motion_vector_desc,
+            nullptr,
+            &game_device_data.motion_vectors);
+      }
+      {
+         D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
+         rtv_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+         rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+         rtv_desc.Texture2D.MipSlice = 0;
+
+         device->CreateRenderTargetView(game_device_data.motion_vectors.get(),
+            &rtv_desc,
+            &game_device_data.motion_vectors_rtv);
+      }
+      {
+         D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
+         srv_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+         srv_desc.Texture2D.MostDetailedMip = 0;
+         srv_desc.Texture2D.MipLevels = 1;
+
+         device->CreateShaderResourceView(game_device_data.motion_vectors.get(),
+            &srv_desc,
+            &game_device_data.motion_vectors_srv);
+      }
+   }
+
    void SetupSr(ID3D11DeviceContext* native_device_context, GameDeviceDataMetaphor& game_device_data, DeviceData& device_data)
    {
       com_ptr<ID3D11Device> device;
@@ -320,45 +378,6 @@ public:
             device->CreateUnorderedAccessView(game_device_data.scaled_motion_vectors.get(),
                &uav_desc,
                &game_device_data.scaled_motion_vectors_uav);
-         }
-         {
-            D3D11_TEXTURE2D_DESC motion_vector_desc;
-            motion_vector_desc.Width = width;
-            motion_vector_desc.Height = height;
-            motion_vector_desc.Usage = D3D11_USAGE_DEFAULT;
-            motion_vector_desc.ArraySize = 1;
-            motion_vector_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            motion_vector_desc.SampleDesc.Count = 1;
-            motion_vector_desc.SampleDesc.Quality = 0;
-            motion_vector_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-            motion_vector_desc.CPUAccessFlags = 0;
-            motion_vector_desc.MiscFlags = 0;
-            motion_vector_desc.MipLevels = 1;
-
-            device->CreateTexture2D(&motion_vector_desc,
-               nullptr,
-               &game_device_data.motion_vectors);
-         }
-         {
-            D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
-            rtv_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-            rtv_desc.Texture2D.MipSlice = 0;
-
-            device->CreateRenderTargetView(game_device_data.motion_vectors.get(),
-               &rtv_desc,
-               &game_device_data.motion_vectors_rtv);
-         }
-         {
-            D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
-            srv_desc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            srv_desc.Texture2D.MostDetailedMip = 0;
-            srv_desc.Texture2D.MipLevels = 1;
-
-            device->CreateShaderResourceView(game_device_data.motion_vectors.get(),
-               &srv_desc,
-               &game_device_data.motion_vectors_srv);
          }
          {
             D3D11_TEXTURE2D_DESC bias_mask_desc;
@@ -523,6 +542,10 @@ public:
 
                D3D11_TEXTURE2D_DESC target_desc;
                texture->GetDesc(&target_desc);
+
+               com_ptr<ID3D11Device> device;
+               native_device_context->GetDevice(&device);
+               SetupMotionVectorTexture(device.get(), game_device_data, target_desc.Width, target_desc.Height);
 
                com_ptr<ID3D11Buffer> transform_constant_buffer;
                native_device_context->VSGetConstantBuffers(1, 1, &transform_constant_buffer);
@@ -708,37 +731,25 @@ public:
             if ((stages & reshade::api::shader_stage::pixel) != 0 &&
                 memcmp(&vs_consts.mtxLocalToWorldViewProjPrev, &null_matrix, sizeof(float4x4)) != 0)
             {
-               com_ptr<ID3D11PixelShader> pixel_shader;
-               native_device_context->PSGetShader(&pixel_shader, nullptr, nullptr);
-
-               com_ptr<ID3D11Buffer> vertex_buffer;
-               native_device_context->IAGetVertexBuffers(0, 1, &vertex_buffer, nullptr, nullptr);
-
                auto hash_transform = [](float4x4 transform)
                {
-                  float* as_float = (float*)&transform;
-                  int32_t as_int[16] = {};
-                  for (uint32_t i = 12; i < 16; ++i)
-                  {
-                     as_int[i] = (int32_t)round(as_float[i] * 100.0f);
-                  }
-                  return compute_crc32((const uint8_t*)&as_int, sizeof(as_int));
+                  return compute_crc32((const uint8_t*)&transform.m30, 4 * sizeof(float));
                };
 
-               auto hash_draw_call = [](ID3D11PixelShader* pixel_shader, ID3D11Buffer* vertex_buffer, uint32_t vertex_count)
+               auto hash_draw_call = [](uint64_t pixel_shader, ID3D11Buffer* vertex_buffer, uint32_t vertex_count)
                {
-                  int32_t as_int[2 + 2 + 1] = {};
-                  memcpy(&as_int[0], pixel_shader, sizeof(pixel_shader));
-                  memcpy(&as_int[2], vertex_buffer, sizeof(vertex_buffer));
-                  memcpy(&as_int[4], &vertex_count, sizeof(uint32_t));
-                  return compute_crc32((const uint8_t*)&as_int, sizeof(as_int));
+                  uint8_t buffer[sizeof(pixel_shader) + sizeof(vertex_buffer) + sizeof(vertex_count)] = {};
+                  memcpy(&buffer[0], &pixel_shader, sizeof(pixel_shader));
+                  memcpy(&buffer[sizeof(pixel_shader)], &vertex_buffer, sizeof(vertex_buffer));
+                  memcpy(&buffer[sizeof(pixel_shader) + sizeof(vertex_buffer)], &vertex_count, sizeof(vertex_count));
+                  return compute_crc32(buffer, sizeof(buffer));
                };
 
-               uint32_t draw_call_hash = hash_draw_call(pixel_shader.get(), vertex_buffer.get(), max(last_draw_dispatch_data.index_count, last_draw_dispatch_data.vertex_count));
+               uint32_t draw_call_hash = hash_draw_call(original_shader_hashes.pixel_shaders[0], vertex_buffer.get(), max(last_draw_dispatch_data.index_count, last_draw_dispatch_data.vertex_count));
                uint32_t transform_hash = hash_transform(vs_consts.mtxLocalToWorldViewProj);
 
                auto& stored_transforms = game_device_data.transform_lookup[draw_call_hash];
-               bool found = false;
+               /*bool found = false;
                for (uint32_t i = 0; i < stored_transforms.size(); ++i)
                {
                   if (stored_transforms[i].transform_hash == transform_hash)
@@ -747,25 +758,26 @@ public:
                      break;
                   }
                }
-               if (!found)
+               if (!found)*/
                {
                   stored_transforms.push_back({transform_hash, vs_consts.mtxLocalToWorldViewProj, vs_consts.mtxLocalToWorld});
                }
 
                auto it = game_device_data.prev_transform_lookup.find(draw_call_hash);
-               if (it != game_device_data.prev_transform_lookup.cend())
+               if (it != game_device_data.prev_transform_lookup.cend() &&
+                   it->second.size() > 0)
                {
-                  uint32_t prev_transform_hash = hash_transform(vs_consts.mtxLocalToWorldViewProjPrev);
+                  // uint32_t prev_transform_hash = hash_transform(vs_consts.mtxLocalToWorldViewProjPrev);
 
                   TransformCacheEntry* cache_data = nullptr;
-                  for (uint32_t i = 0; i < it->second.size(); ++i)
+                  /*for (uint32_t i = 0; i < it->second.size(); ++i)
                   {
                      if (it->second[i].transform_hash == prev_transform_hash)
                      {
                         cache_data = &it->second[i];
                         break;
                      }
-                  }
+                  }*/
                   if (!cache_data)
                   {
                      float shortest_distance = FLT_MAX;
@@ -822,6 +834,17 @@ public:
 
             game_device_data.vsconst_transform_data_changed = false;
          }
+         /*else
+         {
+             GFD_VSCONST_TRANSFORM vs_consts = game_device_data.vsconst_transform_data;
+             vs_consts.mtxLocalToWorldViewProj = game_device_data.proj_with_jitter * game_device_data.inv_proj * vs_consts.mtxLocalToWorldViewProj;
+             vs_consts.mtxLocalToWorldViewProjPrev = game_device_data.prev_proj_with_current_jitter * game_device_data.prev_inv_proj * vs_consts.mtxLocalToWorldViewProjPrev;
+
+             if (game_device_data.cb_transform)
+             {
+                 native_device_context->UpdateSubresource(game_device_data.cb_transform, 0, nullptr, &vs_consts, 0, 0);
+             }
+         }*/
 
          const auto pixel_shader_it = game_device_data.modified_pixel_shaders.find(original_shader_hashes.pixel_shaders.front());
          ID3D11PixelShader* shader = nullptr;
@@ -848,18 +871,7 @@ public:
             com_ptr<ID3D11Device> device;
             native_device_context->GetDevice(&device);
             HRESULT hr = device->CreatePixelShader(shader_code.data(), shader_code.size(), nullptr, &shader);
-            if (FAILED(hr))
-            {
-               shader->Release();
-               shader = nullptr;
-
-               // no point in trying again
-               game_device_data.pixel_shader_code.erase(original_shader_hashes.pixel_shaders.front());
-            }
-            else
-            {
-               game_device_data.modified_pixel_shaders[original_shader_hashes.pixel_shaders.front()] = shader;
-            }
+            game_device_data.modified_pixel_shaders[original_shader_hashes.pixel_shaders.front()] = shader;
          }
          else
          {
